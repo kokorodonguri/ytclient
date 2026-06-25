@@ -1,0 +1,52 @@
+{
+  "name": "vspo-client",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "backend": "python src/backend/main.py",
+    "backend:lan": "python src/backend/main.py 8010 0.0.0.0",
+    "check": "node --experimental-vm-modules scripts/check-syntax.mjs && python -m py_compile src/backend/main.py",
+    "build:backend": "python -m PyInstaller --onefile --name backend --distpath build_temp --workpath build_temp/pyinstaller --specpath build_temp src/backend/main.py",
+    "stamp:icon": "node scripts/stamp-icon.mjs",
+    "build": "npm run build:backend && electron-builder --win dir && npm run stamp:icon && electron-builder --win nsis --prepackaged dist/win-unpacked",
+    "android:sync": "npx cap sync android",
+    "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/build-apk.ps1"
+  },
+  "build": {
+    "appId": "com.vspo.client",
+    "productName": "VSPO Client",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico"
+    },
+    "extraResources": [
+      {
+        "from": "build_temp/backend.exe",
+        "to": "backend.exe"
+      },
+      {
+        "from": "src/frontend",
+        "to": "frontend"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.1",
+    "electron": "^41.2.1",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/core": "^8.4.1"
+  }
+}

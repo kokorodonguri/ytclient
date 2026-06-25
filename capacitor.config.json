@@ -1,0 +1,11 @@
+{
+  "appId": "com.vspo.client",
+  "appName": "VSPO Client",
+  "webDir": "frontend",
+  "server": {
+    "androidScheme": "http"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
