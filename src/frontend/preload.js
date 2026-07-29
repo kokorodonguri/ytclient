@@ -162,8 +162,13 @@ const exposedAPI = {
       if (!isValidString(config.backendUrl, 1, 2048)) {
         throw new Error("Invalid backend URL");
       }
+      const apiKey = typeof config.apiKey === "string" ? config.apiKey : "";
+      if (apiKey && !isValidString(apiKey, 1, 512)) {
+        throw new Error("Invalid API key");
+      }
       return await ipcRenderer.invoke("app:set-backend-config", {
         backendUrl: config.backendUrl,
+        apiKey,
         startLocalBackend: Boolean(config.startLocalBackend),
       });
     } catch (error) {

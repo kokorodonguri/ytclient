@@ -47,8 +47,13 @@ function getRuntimeApiBaseUrl() {
   return DEFAULT_API_BASE_URL;
 }
 
+export const API_KEY_STORAGE_KEY = 'vspo.apiKey';
+export const API_BASE_URL_STORAGE_KEY = 'vspo.apiBaseUrl';
+
 export const API_CONFIG = {
   BASE_URL: getRuntimeApiBaseUrl(),
+  // 公開バックエンドは認証必須。値は起動時に設定元から注入する（URLには載せない）
+  API_KEY: '',
   TIMEOUT: 15000, // 15 seconds
   ENDPOINTS: {
     HEALTH: '/api/v1/health',
@@ -57,6 +62,20 @@ export const API_CONFIG = {
     LIVE_CHAT: (videoId) => `/api/v1/ws/live-chat/${encodeURIComponent(videoId)}`,
   },
 };
+
+/**
+ * 実行時にバックエンド接続情報を差し替える
+ * @param {{ baseUrl?: string, apiKey?: string }} config
+ */
+export function setRuntimeApiConfig({ baseUrl, apiKey } = {}) {
+  const normalized = normalizeApiBaseUrl(baseUrl);
+  if (normalized) {
+    API_CONFIG.BASE_URL = normalized;
+  }
+  if (typeof apiKey === 'string') {
+    API_CONFIG.API_KEY = apiKey.trim();
+  }
+}
 
 /* ========================================
    📺 チャンネル設定

@@ -12,7 +12,12 @@ import {
   showToast,
   updateFeedStatus,
 } from "./dom.js";
-import { fetchFeed, getErrorMessage, testApiConnection } from "./api.js";
+import {
+  fetchFeed,
+  getErrorMessage,
+  initApiCredentials,
+  testApiConnection,
+} from "./api.js";
 import {
   initializeUI,
   setSelectedChannel,
@@ -74,6 +79,10 @@ async function initializeApp() {
     if (!uiInitSuccess) {
       throw new Error("UI initialization failed");
     }
+
+    // 2.5 保存済みの接続先とAPIキーを読み込む（最初のリクエストより前に行う）
+    log(MODULE, "Loading API credentials...");
+    await initApiCredentials();
 
     // 3. API接続を確認
     log(MODULE, "Testing API connection...");

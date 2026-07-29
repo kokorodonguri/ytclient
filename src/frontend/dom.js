@@ -53,6 +53,7 @@ export function initDomCache() {
     settingsCloseBtn: document.getElementById("settings-close-btn"),
     settingsCancelBtn: document.getElementById("settings-cancel-btn"),
     backendUrlInput: document.getElementById("backend-url-input"),
+    apiKeyInput: document.getElementById("api-key-input"),
     startLocalBackendCheck: document.getElementById(
       "start-local-backend-check",
     ),

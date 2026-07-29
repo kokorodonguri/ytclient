@@ -21,6 +21,7 @@ let isQuitting = false;
 let sessionHooksInstalled = false;
 let ipcHandlersInstalled = false;
 let runtimeBackendUrl = DEFAULT_BACKEND_URL;
+let runtimeApiKey = "";
 let startLocalBackend = false;
 
 if (process.platform === "win32") {
@@ -121,6 +122,7 @@ function loadRuntimeBackendConfig() {
     process.env.VSPO_BACKEND_URL || fileConfig.backendUrl,
   );
   runtimeBackendUrl = configuredUrl || DEFAULT_BACKEND_URL;
+  runtimeApiKey = String(process.env.VSPO_API_KEY || fileConfig.apiKey || "").trim();
 
   if (typeof fileConfig.startLocalBackend === "boolean") {
     startLocalBackend =
@@ -133,17 +135,22 @@ function loadRuntimeBackendConfig() {
 function writeBackendConfig(config) {
   const configPath = path.join(app.getPath("userData"), "backend-config.json");
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  // API キーを含むため所有者のみ読み書き可とする
+  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   return configPath;
 }
 
-async function applyBackendConfig(rawBackendUrl, shouldStartLocalBackend) {
+async function applyBackendConfig(rawBackendUrl, shouldStartLocalBackend, rawApiKey) {
   const backendUrl = normalizeBackendUrl(rawBackendUrl);
   if (!backendUrl) {
     return { ok: false, error: "Invalid backend URL" };
   }
 
   runtimeBackendUrl = backendUrl;
+  runtimeApiKey = typeof rawApiKey === "string" ? rawApiKey.trim() : runtimeApiKey;
   startLocalBackend =
     typeof shouldStartLocalBackend === "boolean"
       ? shouldStartLocalBackend && isLoopbackBackendUrl(backendUrl)
@@ -151,6 +158,7 @@ async function applyBackendConfig(rawBackendUrl, shouldStartLocalBackend) {
 
   const configPath = writeBackendConfig({
     backendUrl: runtimeBackendUrl,
+    apiKey: runtimeApiKey,
     startLocalBackend,
   });
 
@@ -236,7 +244,18 @@ function startBackendProcess() {
     console.warn("Failed to open backend log, falling back to ignore:", error);
   }
 
-  backendProcess = spawn(command, args, { cwd, stdio, windowsHide: true });
+  // ローカル起動時もキーを揃えておく（設定済みなら認証あり、未設定ならループバック無認証）
+  const backendEnv = { ...process.env };
+  if (runtimeApiKey) {
+    backendEnv.VSPO_API_KEY = runtimeApiKey;
+  }
+
+  backendProcess = spawn(command, args, {
+    cwd,
+    stdio,
+    windowsHide: true,
+    env: backendEnv,
+  });
 
   const closeLog = () => {
     if (logFd !== null) {
@@ -468,6 +487,7 @@ function installIpcHandlersOnce() {
     ok: true,
     config: {
       backendUrl: runtimeBackendUrl,
+      apiKey: runtimeApiKey,
       startLocalBackend,
       defaultBackendUrl: DEFAULT_BACKEND_URL,
     },
@@ -476,7 +496,11 @@ function installIpcHandlersOnce() {
     if (!config || typeof config !== "object") {
       return { ok: false, error: "Invalid config" };
     }
-    return applyBackendConfig(config.backendUrl, config.startLocalBackend);
+    return applyBackendConfig(
+      config.backendUrl,
+      config.startLocalBackend,
+      config.apiKey,
+    );
   });
 
   ipcMain.on("app:log", (_event, logEntry) => {

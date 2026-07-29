@@ -4,10 +4,60 @@
  * すべてのサーバー通信をここに集約
  */
 
-import { API_CONFIG } from "./constants.js";
-import { log, logError } from "./utils.js";
+import {
+  API_CONFIG,
+  API_BASE_URL_STORAGE_KEY,
+  API_KEY_STORAGE_KEY,
+  setRuntimeApiConfig,
+} from "./constants.js";
+import { getFromLocalStorage, log, logError } from "./utils.js";
 
 const MODULE = "API";
+
+/**
+ * ========================================
+ * 認証情報
+ * ======================================== */
+
+/**
+ * 認証ヘッダーを構築
+ * @returns {Object} ヘッダーオブジェクト
+ */
+function buildAuthHeaders() {
+  return API_CONFIG.API_KEY ? { "X-API-Key": API_CONFIG.API_KEY } : {};
+}
+
+/**
+ * 保存済みのバックエンド接続情報を読み込む
+ * Electron では IPC 経由、それ以外は localStorage を参照する
+ * @returns {Promise<void>}
+ */
+export async function initApiCredentials() {
+  try {
+    const result = await window.api?.getBackendConfig?.();
+    if (result?.ok && result.config) {
+      setRuntimeApiConfig({
+        baseUrl: result.config.backendUrl,
+        apiKey: result.config.apiKey,
+      });
+      log(MODULE, "Backend config loaded from host app");
+      return;
+    }
+  } catch (error) {
+    logError(MODULE, "Failed to load backend config from host app", error);
+  }
+
+  // Electron 以外（APK / ブラウザ）は端末側の保存値を使う
+  const storedKey = getFromLocalStorage(API_KEY_STORAGE_KEY, "");
+  const storedBaseUrl = getFromLocalStorage(API_BASE_URL_STORAGE_KEY, "");
+  setRuntimeApiConfig({
+    baseUrl: typeof storedBaseUrl === "string" ? storedBaseUrl : "",
+    apiKey: typeof storedKey === "string" ? storedKey : "",
+  });
+  if (storedKey || storedBaseUrl) {
+    log(MODULE, "Backend config loaded from local storage");
+  }
+}
 
 /**
  * ========================================
@@ -27,6 +77,7 @@ async function fetchWithTimeout(url, options = {}) {
   try {
     return await fetch(url, {
       ...options,
+      headers: { ...buildAuthHeaders(), ...(options.headers || {}) },
       signal: controller.signal,
     });
   } finally {
@@ -48,6 +99,24 @@ async function handleApiResponse(response) {
     if (isMissingApi) {
       const error = new Error(
         `API Error: ${response.status} ${response.statusText} - VSPO APIではないサーバーに接続しています`,
+      );
+      error.status = response.status;
+      error.body = errorText;
+      throw error;
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      const error = new Error(
+        "APIキーが未設定または無効です。設定画面で確認してください",
+      );
+      error.status = response.status;
+      error.body = errorText;
+      throw error;
+    }
+
+    if (response.status === 429) {
+      const error = new Error(
+        "リクエストが多すぎます。しばらく待って再試行してください",
       );
       error.status = response.status;
       error.body = errorText;
@@ -198,7 +267,12 @@ export function createLiveChatWebSocket(videoId, handlers = {}) {
     log(MODULE, `Creating WebSocket for video: ${videoId}`);
 
     const wsBaseUrl = API_CONFIG.BASE_URL.replace(/^http/, "ws");
-    const wsUrl = `${wsBaseUrl}${API_CONFIG.ENDPOINTS.LIVE_CHAT(videoId)}`;
+    // WebSocket はブラウザからカスタムヘッダーを付けられないため、
+    // 認証はクエリ文字列で渡す（そのため wss/TLS が前提）
+    const authQuery = API_CONFIG.API_KEY
+      ? `?api_key=${encodeURIComponent(API_CONFIG.API_KEY)}`
+      : "";
+    const wsUrl = `${wsBaseUrl}${API_CONFIG.ENDPOINTS.LIVE_CHAT(videoId)}${authQuery}`;
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
@@ -386,6 +460,7 @@ export function logApiStatus() {
 }
 
 export default {
+  initApiCredentials,
   fetchFeed,
   fetchVideoComments,
   fetchVideoDescription,

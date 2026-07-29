@@ -20,10 +20,19 @@ import {
   showToast,
 } from "./dom.js";
 import { renderGrid } from "./grid.js";
-import { log, logError, escapeHTML, debounce } from "./utils.js";
+import {
+  log,
+  logError,
+  escapeHTML,
+  debounce,
+  saveToLocalStorage,
+} from "./utils.js";
 import {
   CHANNELS,
   API_CONFIG,
+  API_BASE_URL_STORAGE_KEY,
+  API_KEY_STORAGE_KEY,
+  setRuntimeApiConfig,
   GAME_FILTERS,
   VIDEO_MODES,
   TIMING,
@@ -394,18 +403,21 @@ function setBackgroundInert(inert) {
 async function openSettingsModal() {
   const modal = getDOM("settingsModal");
   const input = getDOM("backendUrlInput");
+  const keyInput = getDOM("apiKeyInput");
   const check = getDOM("startLocalBackendCheck");
   const current = getDOM("settingsCurrentBackend");
 
   if (!modal || !input || !check) return;
 
   let backendUrl = API_CONFIG.BASE_URL;
+  let apiKey = API_CONFIG.API_KEY;
   let startLocalBackend = false;
 
   try {
     const result = await window.api?.getBackendConfig?.();
     if (result?.ok && result.config) {
       backendUrl = result.config.backendUrl || backendUrl;
+      apiKey = result.config.apiKey || apiKey;
       startLocalBackend = Boolean(result.config.startLocalBackend);
     }
   } catch (error) {
@@ -413,6 +425,7 @@ async function openSettingsModal() {
   }
 
   input.value = backendUrl;
+  if (keyInput) keyInput.value = apiKey;
   check.checked = startLocalBackend;
   if (current) {
     current.textContent = `現在の接続先: ${backendUrl}`;
@@ -446,6 +459,7 @@ function normalizeBackendInput(rawValue) {
 
 async function saveSettings() {
   const input = getDOM("backendUrlInput");
+  const keyInput = getDOM("apiKeyInput");
   const check = getDOM("startLocalBackendCheck");
   const saveBtn = getDOM("settingsSaveBtn");
 
@@ -457,22 +471,29 @@ async function saveSettings() {
     return;
   }
 
-  if (!window.api?.setBackendConfig) {
-    showToast("この環境では設定を保存できません", "error");
-    return;
-  }
+  const apiKey = (keyInput?.value || "").trim();
 
   if (saveBtn) saveBtn.disabled = true;
   try {
-    const result = await window.api.setBackendConfig({
-      backendUrl,
-      startLocalBackend: check.checked,
-    });
-    if (!result?.ok) {
-      throw new Error(result?.error || "保存に失敗しました");
+    if (window.api?.setBackendConfig) {
+      const result = await window.api.setBackendConfig({
+        backendUrl,
+        apiKey,
+        startLocalBackend: check.checked,
+      });
+      if (!result?.ok) {
+        throw new Error(result?.error || "保存に失敗しました");
+      }
+    } else {
+      // Electron 以外（APK / ブラウザ）は端末側に保持する
+      saveToLocalStorage(API_KEY_STORAGE_KEY, apiKey);
+      saveToLocalStorage(API_BASE_URL_STORAGE_KEY, backendUrl);
     }
+
+    setRuntimeApiConfig({ baseUrl: backendUrl, apiKey });
     showToast("設定を保存しました", "success");
     closeSettingsModal();
+    await window.triggerFeedRefresh?.();
   } catch (error) {
     logError(MODULE, "Failed to save backend config", error);
     showToast("設定の保存に失敗しました", "error");
