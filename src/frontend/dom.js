@@ -129,13 +129,31 @@ export function toggleSidebar(show) {
 
   if (!sidebar || !overlay) return;
 
-  if (show === undefined) {
-    sidebar.classList.toggle("open");
-    overlay.classList.toggle("show");
-  } else {
-    toggleClass(sidebar, "open", show);
-    toggleClass(overlay, "show", show);
+  const isOpen =
+    show === undefined ? !sidebar.classList.contains("open") : Boolean(show);
+  const wasOpen = sidebar.classList.contains("open");
+
+  toggleClass(sidebar, "open", isOpen);
+  toggleClass(overlay, "show", isOpen);
+
+  // 閉じたサイドバーの項目をタブ順序から外し、開閉状態をATに伝える
+  sidebar.inert = !isOpen;
+  const hamburgerBtn = getDOM("hamburgerBtn");
+  hamburgerBtn?.setAttribute("aria-expanded", String(isOpen));
+
+  if (isOpen) {
+    sidebar.querySelector("button")?.focus();
+  } else if (wasOpen && sidebar.contains(document.activeElement)) {
+    hamburgerBtn?.focus();
   }
+}
+
+/**
+ * サイドバーが開いているか
+ * @returns {boolean}
+ */
+export function isSidebarOpen() {
+  return Boolean(getDOM("sidebar")?.classList.contains("open"));
 }
 
 /**
@@ -181,12 +199,14 @@ export function setTabActive(mode) {
   toggleClass(officialTab, "active", mode === "official");
   toggleClass(clipsTab, "active", mode === "clips");
 
-  // aria-selected属性も更新
+  // aria-selected属性とrovingタブ順序も更新
   officialTab.setAttribute(
     "aria-selected",
     mode === "official" ? "true" : "false",
   );
   clipsTab.setAttribute("aria-selected", mode === "clips" ? "true" : "false");
+  officialTab.setAttribute("tabindex", mode === "official" ? "0" : "-1");
+  clipsTab.setAttribute("tabindex", mode === "clips" ? "0" : "-1");
 }
 
 /**
@@ -223,6 +243,13 @@ export function toggleGameOptions(show) {
  */
 export function closeAllDropdowns() {
   document.querySelectorAll(".dropdown-options").forEach((el) => {
+    // 非表示になる領域にフォーカスが残らないよう、先に呼び出しボタンへ戻す
+    if (el.contains(document.activeElement)) {
+      el
+        .closest(".custom-dropdown")
+        ?.querySelector('[aria-haspopup="listbox"]')
+        ?.focus();
+    }
     removeClass(el, "show");
   });
 
@@ -394,9 +421,10 @@ export function showToast(
 
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
-  toast.setAttribute("role", "alert");
   toast.textContent = message || "";
 
+  // ライブリージョンはコンテナ側に一本化（入れ子のrole="alert"は二重読み上げの原因）
+  container.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
   container.appendChild(toast);
 
   // 指定時間後に削除
@@ -426,6 +454,7 @@ export default {
   toggleSidebar,
   closeSidebar,
   openSidebar,
+  isSidebarOpen,
   updateSidebarSelectedChannel,
   setTabActive,
   toggleGameOptions,

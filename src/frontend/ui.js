@@ -9,6 +9,7 @@ import {
   initDomCache,
   getDOM,
   closeSidebar,
+  isSidebarOpen,
   toggleSidebar,
   setTabActive,
   toggleGameOptions,
@@ -75,7 +76,7 @@ export function initializeSidebar() {
       item.className = "menu-item";
       item.setAttribute("type", "button");
       item.dataset.channelName = channel.name;
-      item.innerHTML = `<span class="icon">📌</span><span>${escapeHTML(channel.name)}</span>`;
+      item.innerHTML = `<span class="icon" aria-hidden="true">📌</span><span>${escapeHTML(channel.name)}</span>`;
       item.addEventListener("click", () => {
         setSelectedChannel(channel.name);
         closeSidebar();
@@ -101,21 +102,100 @@ export function initializeGameDropdown() {
 
   if (!gameSelectedText || !gameOptions) return;
 
+  const items = Array.from(gameOptions.querySelectorAll(".dropdown-item"));
+  let activeIndex = 0;
+
+  const setActive = (index) => {
+    activeIndex = (index + items.length) % items.length;
+    items.forEach((el, i) => el.classList.toggle("focused", i === activeIndex));
+    gameSelectedText.setAttribute(
+      "aria-activedescendant",
+      items[activeIndex]?.id || "",
+    );
+    items[activeIndex]?.scrollIntoView({ block: "nearest" });
+  };
+
+  const isOpen = () => gameOptions.classList.contains("show");
+
+  const openList = () => {
+    if (!isOpen()) toggleGameOptions(true);
+    const selected = items.findIndex(
+      (el) => el.getAttribute("aria-selected") === "true",
+    );
+    setActive(selected >= 0 ? selected : 0);
+  };
+
+  const closeList = () => {
+    toggleGameOptions(false);
+    gameSelectedText.removeAttribute("aria-activedescendant");
+    items.forEach((el) => el.classList.remove("focused"));
+  };
+
+  const commit = (item) => {
+    const gameValue = item.getAttribute("data-value") || "";
+    items.forEach((el) => el.setAttribute("aria-selected", String(el === item)));
+    state.setSelectedGame(gameValue);
+    updateGameSelectedText(item.textContent);
+    closeList();
+    gameSelectedText.focus();
+    renderCurrentGrid();
+  };
+
   // ドロップダウン開閉
   gameSelectedText.addEventListener("click", (e) => {
     e.stopPropagation();
-    toggleGameOptions();
+    if (isOpen()) {
+      closeList();
+    } else {
+      openList();
+    }
   });
 
-  // ゲーム選択
-  gameOptions.querySelectorAll(".dropdown-item").forEach((item) => {
-    item.addEventListener("click", () => {
-      const gameValue = item.getAttribute("data-value") || "";
-      state.setSelectedGame(gameValue);
-      updateGameSelectedText(item.textContent);
-      toggleGameOptions(false);
-      renderCurrentGrid();
-    });
+  // キーボード操作 (WAI-ARIA listboxパターン)
+  gameSelectedText.addEventListener("keydown", (e) => {
+    switch (e.key) {
+      case "ArrowDown":
+      case "ArrowUp":
+        e.preventDefault();
+        if (!isOpen()) {
+          openList();
+        } else {
+          setActive(activeIndex + (e.key === "ArrowDown" ? 1 : -1));
+        }
+        break;
+      case "Home":
+        if (!isOpen()) return;
+        e.preventDefault();
+        setActive(0);
+        break;
+      case "End":
+        if (!isOpen()) return;
+        e.preventDefault();
+        setActive(items.length - 1);
+        break;
+      case "Enter":
+      case " ":
+        if (isOpen()) {
+          e.preventDefault();
+          if (items[activeIndex]) commit(items[activeIndex]);
+        }
+        break;
+      case "Escape":
+        if (isOpen()) {
+          e.preventDefault();
+          closeList();
+        }
+        break;
+      case "Tab":
+        if (isOpen()) closeList();
+        break;
+    }
+  });
+
+  // ゲーム選択（マウス）
+  items.forEach((item, index) => {
+    item.addEventListener("click", () => commit(item));
+    item.addEventListener("mousemove", () => setActive(index));
   });
 
   log(MODULE, "Game dropdown initialized");
@@ -144,6 +224,24 @@ export function initializeTabButtons() {
     });
   }
 
+  // 矢印キーでのタブ移動 (WAI-ARIA tabsパターン)
+  const tablist = tabOfficial?.closest('[role="tablist"]');
+  if (tablist && tabOfficial && tabClips) {
+    tablist.addEventListener("keydown", (e) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      const tabs = [tabOfficial, tabClips];
+      const current = tabs.indexOf(document.activeElement);
+      if (current < 0) return;
+      e.preventDefault();
+      let next;
+      if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = tabs.length - 1;
+      else next = (current + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].focus();
+      tabs[next].click();
+    });
+  }
+
   log(MODULE, "Tab buttons initialized");
 }
 
@@ -167,11 +265,19 @@ export function initializeGlobalHandlers() {
     }
   });
 
+  // Escapeでサイドバーを閉じる（オーバーレイクリックのキーボード代替）
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isSidebarOpen()) {
+      closeSidebar();
+    }
+  });
+
   // 更新ボタン
   if (refreshBtn) {
+    const labelEl = refreshBtn.querySelector("span:not(.icon)");
     refreshBtn.addEventListener("click", async () => {
-      const originalText = refreshBtn.textContent;
-      refreshBtn.textContent = BUTTON_LABELS.LOADING;
+      if (labelEl) labelEl.textContent = BUTTON_LABELS.LOADING;
+      refreshBtn.setAttribute("aria-busy", "true");
       refreshBtn.disabled = true;
 
       try {
@@ -180,7 +286,8 @@ export function initializeGlobalHandlers() {
         logError(MODULE, "Refresh error", error);
         showToast(MESSAGES.ERROR.NETWORK, "error");
       } finally {
-        refreshBtn.textContent = originalText;
+        if (labelEl) labelEl.textContent = BUTTON_LABELS.REFRESH;
+        refreshBtn.removeAttribute("aria-busy");
         refreshBtn.disabled = false;
       }
     });
@@ -245,6 +352,45 @@ export function initializeSettingsDialog() {
   });
 }
 
+let lastFocusedBeforeModal = null;
+
+function trapModalKeydown(e) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closeSettingsModal();
+    return;
+  }
+  if (e.key !== "Tab") return;
+
+  const modal = getDOM("settingsModal");
+  if (!modal) return;
+  const focusables = Array.from(
+    modal.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((el) => el.offsetParent !== null);
+  if (focusables.length === 0) return;
+
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+function setBackgroundInert(inert) {
+  ["main-content", "main-header", "sidebar"].forEach((id) => {
+    const el = document.getElementById(id);
+    // サイドバーは閉じている間は常にinertを維持する
+    if (!el || (id === "sidebar" && !inert && !isSidebarOpen())) return;
+    el.inert = inert;
+  });
+}
+
 async function openSettingsModal() {
   const modal = getDOM("settingsModal");
   const input = getDOM("backendUrlInput");
@@ -272,13 +418,24 @@ async function openSettingsModal() {
     current.textContent = `現在の接続先: ${backendUrl}`;
   }
 
+  lastFocusedBeforeModal = document.activeElement;
   modal.classList.remove("hidden");
+  setBackgroundInert(true);
+  modal.addEventListener("keydown", trapModalKeydown);
   input.focus();
   input.select();
 }
 
 function closeSettingsModal() {
-  getDOM("settingsModal")?.classList.add("hidden");
+  const modal = getDOM("settingsModal");
+  if (!modal || modal.classList.contains("hidden")) return;
+  modal.removeEventListener("keydown", trapModalKeydown);
+  modal.classList.add("hidden");
+  setBackgroundInert(false);
+  if (lastFocusedBeforeModal?.isConnected) {
+    lastFocusedBeforeModal.focus();
+  }
+  lastFocusedBeforeModal = null;
 }
 
 function normalizeBackendInput(rawValue) {
@@ -410,10 +567,18 @@ function syncSidebarActiveChannel(value) {
   const sidebarHomeBtn = getDOM("sidebarHomeBtn");
   const sidebarChannelList = getDOM("sidebarChannelList");
 
-  sidebarHomeBtn?.classList.toggle("active", value === CHANNELS.ALL.value);
+  const isHome = value === CHANNELS.ALL.value;
+  sidebarHomeBtn?.classList.toggle("active", isHome);
+  if (sidebarHomeBtn) {
+    if (isHome) sidebarHomeBtn.setAttribute("aria-current", "page");
+    else sidebarHomeBtn.removeAttribute("aria-current");
+  }
 
   sidebarChannelList?.querySelectorAll("[data-channel-name]").forEach((item) => {
-    item.classList.toggle("active", item.dataset.channelName === value);
+    const active = item.dataset.channelName === value;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "true");
+    else item.removeAttribute("aria-current");
   });
 }
 
@@ -439,8 +604,37 @@ export function closePlayer() {
   }
 
   // UIを更新
+  const lastVideoId = state.currentPlayerVideos?.[0]?.videoId || "";
   hidePlayer(state.currentMode);
   state.setCurrentPlayerVideos([]);
+
+  // 再生前に選択していたカードへフォーカスを戻す
+  restoreFocusToCard(lastVideoId);
+}
+
+/**
+ * 一覧に戻ったとき、元のビデオカードへフォーカスを戻す
+ * @param {string} videoId
+ */
+export function restoreFocusToCard(videoId) {
+  // 有効なフォーカスが別の場所にあるとき（例: タブ切替時）は奪わない
+  const active = document.activeElement;
+  const playerView = getDOM("playerView");
+  if (
+    active &&
+    active !== document.body &&
+    !(playerView && playerView.contains(active))
+  ) {
+    return;
+  }
+
+  let target = null;
+  if (videoId && typeof CSS !== "undefined" && CSS.escape) {
+    target = document.querySelector(
+      `.video-card[data-video-id="${CSS.escape(videoId)}"]`,
+    );
+  }
+  (target || getDOM("mainContent"))?.focus();
 }
 
 /**

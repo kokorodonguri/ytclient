@@ -20,6 +20,8 @@ import {
   fetchVideoDescription,
 } from './api.js';
 import state from './state.js';
+import { restoreFocusToCard } from './ui.js';
+import { escapeAttribute } from './utils.js';
 
 /**
  * ビデオプレイヤーを描画
@@ -39,7 +41,7 @@ export async function renderPlayer(videoId, title, isLive) {
     const watchUrl = getYouTubeWatchUrl(videoId);
 
     // プレイヤーHTMLを生成
-    const playerHTML = generatePlayerHTML(embedUrl, isLive);
+    const playerHTML = generatePlayerHTML(embedUrl, isLive, title);
     setPlayerHTML(playerHTML);
     updatePlayerVideoTitle(title);
 
@@ -65,13 +67,14 @@ export async function renderPlayer(videoId, title, isLive) {
  * @param {boolean} isLive - ライブ配信かどうか
  * @returns {string}
  */
-function generatePlayerHTML(embedUrl, isLive) {
+function generatePlayerHTML(embedUrl, isLive, title) {
   const toggleDanmakuButton = isLive
-    ? '<button id="toggle-danmaku-btn" class="player-secondary-btn active" type="button">💬 弾幕ON</button>'
+    ? '<button id="toggle-danmaku-btn" class="player-secondary-btn active" type="button" aria-pressed="true"><span aria-hidden="true">💬</span> 弾幕ON</button>'
     : '';
 
+  // 弾幕は流れるコメントの視覚演出であり、ATには読ませない
   const danmakuContainer = isLive
-    ? '<div class="danmaku-container" id="danmaku-container"></div>'
+    ? '<div class="danmaku-container" id="danmaku-container" aria-hidden="true"></div>'
     : '';
 
   return `
@@ -81,6 +84,7 @@ function generatePlayerHTML(embedUrl, isLive) {
           <div class="player-embed-frame">
             <iframe
               id="youtube-player-iframe"
+              title="${escapeAttribute(title || '')} - YouTubeプレイヤー"
               src="${embedUrl}"
               loading="eager"
               referrerpolicy="strict-origin-when-cross-origin"
@@ -115,6 +119,7 @@ function generateSplitPlayerHTML(primaryVideo, secondaryVideo) {
               <iframe
                 class="split-player-iframe"
                 data-split-index="${index}"
+                title="${escapeAttribute(video.title || '')} - YouTubeプレイヤー"
                 src="${getYouTubeEmbedUrl(video.videoId)}"
                 loading="eager"
                 referrerpolicy="strict-origin-when-cross-origin"
@@ -282,7 +287,8 @@ function setupDanmakuToggle(toggleBtn) {
   toggleBtn.addEventListener('click', () => {
     isDanmakuEnabled = !isDanmakuEnabled;
     toggleBtn.classList.toggle('active', isDanmakuEnabled);
-    toggleBtn.textContent = isDanmakuEnabled ? '💬 弾幕ON' : '💬 弾幕OFF';
+    toggleBtn.innerHTML = `<span aria-hidden="true">💬</span> ${isDanmakuEnabled ? '弾幕ON' : '弾幕OFF'}`;
+    toggleBtn.setAttribute('aria-pressed', String(isDanmakuEnabled));
     danmakuContainer.style.display = isDanmakuEnabled ? 'block' : 'none';
   });
 }
@@ -329,6 +335,9 @@ function handleDanmakuMessage(data, container) {
 
   // 弾幕が非表示の場合はスキップ
   if (container.style.display === 'none') return;
+
+  // 動きの抑制設定時は流れるコメントを出さない
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
   try {
     const msgEl = document.createElement('div');
@@ -395,8 +404,9 @@ async function fetchAndDisplayDescription(videoId) {
 
     // 説明文コンテナを作成
     descContainer.innerHTML = `
+      <h3 class="sr-only">動画概要</h3>
       <div id="video-description" class="collapsed"></div>
-      <button id="toggle-description-btn" class="description-toggle-btn" type="button" aria-expanded="false">もっと見る</button>
+      <button id="toggle-description-btn" class="description-toggle-btn" type="button" aria-expanded="false" aria-controls="video-description">もっと見る</button>
     `;
 
     const descEl = document.getElementById('video-description');
@@ -494,6 +504,9 @@ export function playVideo(videoId, title, isLive) {
 
   showPlayer();
 
+  // グリッドが非表示になりフォーカスが落ちるため、プレイヤー先頭の戻るボタンへ移す
+  document.getElementById('back-btn')?.focus();
+
   const nextVideo = { videoId, title, isLive };
   const primaryVideo = state.pendingSplitPrimary;
 
@@ -519,6 +532,8 @@ export function closePlayer() {
     state.activeChatSocket = null;
   }
 
+  const lastVideoId = state.currentPlayerVideos?.[0]?.videoId || '';
+
   // UIをリセット
   const playerView = document.getElementById('player-view');
   const officialContainer = document.getElementById('official-container');
@@ -539,6 +554,9 @@ export function closePlayer() {
 
   hideDescriptionContainer();
   state.setCurrentPlayerVideos([]);
+
+  // 再生前に選択していたカードへフォーカスを戻す
+  restoreFocusToCard(lastVideoId);
 }
 
 export default {

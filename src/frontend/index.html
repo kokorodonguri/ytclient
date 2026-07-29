@@ -32,10 +32,10 @@
             aria-hidden="true"
         ></div>
 
-        <aside id="sidebar" class="sidebar" aria-label="サイドメニュー">
+        <aside id="sidebar" class="sidebar" aria-label="サイドメニュー" inert>
             <div class="sidebar-top">
                 <div class="sidebar-top-content">
-                    <h1 class="sidebar-title">ぶいすぽっ！クライアント</h1>
+                    <h2 class="sidebar-title">ぶいすぽっ！クライアント</h2>
                 </div>
                 <div class="sidebar-current-channel-area">
                     <div class="sidebar-current-channel">
@@ -51,7 +51,7 @@
                     type="button"
                     aria-current="page"
                 >
-                    <span class="icon" role="img" aria-label="ホーム">🏠</span>
+                    <span class="icon" aria-hidden="true">🏠</span>
                     <span>ホーム (すべて表示)</span>
                 </button>
 
@@ -69,6 +69,8 @@
                     class="hamburger-btn"
                     type="button"
                     aria-label="サイドメニューを開閉"
+                    aria-expanded="false"
+                    aria-controls="sidebar"
                 >
                     <svg
                         viewBox="0 0 24 24"
@@ -97,7 +99,7 @@
                     aria-selected="true"
                     aria-controls="official-container"
                 >
-                    <span role="img" aria-label="テレビ">📺</span> メンバー配信
+                    <span aria-hidden="true">📺</span> メンバー配信
                 </button>
                 <button
                     id="tab-clips"
@@ -107,7 +109,7 @@
                     aria-selected="false"
                     aria-controls="clips-container"
                 >
-                    <span role="img" aria-label="ハサミ">✂️</span> 切り抜き
+                    <span aria-hidden="true">✂️</span> 切り抜き
                 </button>
             </nav>
 
@@ -128,48 +130,67 @@
                         id="game-options"
                         role="listbox"
                         tabindex="-1"
+                        aria-labelledby="game-selected-text"
                     >
-                        <li class="dropdown-item" role="option" data-value="">
+                        <li
+                            class="dropdown-item"
+                            id="game-opt-0"
+                            role="option"
+                            aria-selected="true"
+                            data-value=""
+                        >
                             すべてのゲーム
                         </li>
                         <li
                             class="dropdown-item"
+                            id="game-opt-1"
                             role="option"
+                            aria-selected="false"
                             data-value="Apex"
                         >
                             Apex Legends
                         </li>
                         <li
                             class="dropdown-item"
+                            id="game-opt-2"
                             role="option"
+                            aria-selected="false"
                             data-value="Valorant"
                         >
                             VALORANT
                         </li>
                         <li
                             class="dropdown-item"
+                            id="game-opt-3"
                             role="option"
+                            aria-selected="false"
                             data-value="スプラ"
                         >
                             Splatoon / スプラ
                         </li>
                         <li
                             class="dropdown-item"
+                            id="game-opt-4"
                             role="option"
+                            aria-selected="false"
                             data-value="Minecraft"
                         >
                             Minecraft / マイクラ
                         </li>
                         <li
                             class="dropdown-item"
+                            id="game-opt-5"
                             role="option"
+                            aria-selected="false"
                             data-value="歌枠"
                         >
                             歌枠 / 歌ってみた
                         </li>
                         <li
                             class="dropdown-item"
+                            id="game-opt-6"
                             role="option"
+                            aria-selected="false"
                             data-value="雑談"
                         >
                             雑談
@@ -184,12 +205,8 @@
                     placeholder="追加ワード (例: コラボ)"
                     aria-label="追加検索ワード"
                 />
-                <button
-                    id="refresh-btn"
-                    type="button"
-                    aria-label="最新情報を読み込む"
-                >
-                    <span class="icon" role="img" aria-label="更新">🔄</span>
+                <button id="refresh-btn" type="button">
+                    <span class="icon" aria-hidden="true">🔄</span>
                     <span>最新を読み込む</span>
                 </button>
                 <button
@@ -199,23 +216,24 @@
                     aria-label="&#35373;&#23450;"
                     title="&#35373;&#23450;"
                 >
-                    &#9881;
+                    <span aria-hidden="true">&#9881;</span>
                 </button>
 
             </div>
         </header>
 
-        <main id="main-content">
-            <section
-                id="feed-status-panel"
-                class="feed-status-panel"
-                aria-live="polite"
-            >
+        <main id="main-content" tabindex="-1">
+            <section id="feed-status-panel" class="feed-status-panel">
                 <div class="feed-status-main">
                     <span id="connection-status" class="status-pill loading">
                         接続確認中
                     </span>
-                    <span id="feed-summary" class="feed-summary">
+                    <span
+                        id="feed-summary"
+                        class="feed-summary"
+                        aria-live="polite"
+                        aria-atomic="true"
+                    >
                         データを準備しています
                     </span>
                 </div>
@@ -232,7 +250,8 @@
             <section
                 id="official-container"
                 class="video-grid"
-                role="region"
+                role="tabpanel"
+                tabindex="0"
                 aria-labelledby="tab-official"
             >
                 <!-- 初期ロード中のスケルトン -->
@@ -271,7 +290,8 @@
             <section
                 id="clips-container"
                 class="video-grid hidden"
-                role="region"
+                role="tabpanel"
+                tabindex="0"
                 aria-labelledby="tab-clips"
             >
                 <!-- 初期ロード中のスケルトン -->
@@ -319,7 +339,7 @@
                     type="button"
                     aria-label="一覧に戻る"
                 >
-                    <span class="icon" role="img" aria-label="戻る">←</span>
+                    <span class="icon" aria-hidden="true">←</span>
                     <span>一覧に戻る</span>
                 </button>
                 <h2 id="player-video-title" class="player-title"></h2>
@@ -340,6 +360,7 @@
                         class="description-toggle-btn"
                         type="button"
                         aria-expanded="false"
+                        aria-controls="video-description"
                     >
                         もっと見る
                     </button>

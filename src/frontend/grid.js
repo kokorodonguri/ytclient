@@ -61,7 +61,6 @@ export function buildVideoCardHTML(item) {
     const title = escapeAttribute(item.title || "");
     const titleText = escapeHTML(item.title || "");
     const uploaderText = escapeHTML(item.uploader || "");
-    const uploaderAttribute = escapeAttribute(item.uploader || "");
     const thumbnail = escapeAttribute(item.thumbnail || "");
     const isLive = item.is_live ? "true" : "false";
     const ariaLabel = escapeAttribute(
@@ -82,14 +81,14 @@ export function buildVideoCardHTML(item) {
             class="thumbnail"
             src="${thumbnail}"
             loading="lazy"
-            alt="${uploaderAttribute}"
+            alt=""
           />
           <div class="type-badge-container">${typeBadgeHTML}</div>
           <div class="badges-container">${badgesHTML}</div>
         </div>
         <div class="video-info">
-          <h3 class="title">${titleText}</h3>
-          <p class="channel-title">${uploaderText}</p>
+          <span class="title">${titleText}</span>
+          <span class="channel-title">${uploaderText}</span>
         </div>
       </button>
     `;
@@ -324,8 +323,18 @@ function formatLastUpdated(rawValue) {
  * @param {boolean} isBuilding - 構築中フラグ
  */
 function renderVideos(container, videos, isBuilding = false) {
+  // 再描画でフォーカス中のカードが破棄されるため、復元用にIDを保持
+  const focusedVideoId =
+    document.activeElement?.closest?.(".video-card")?.dataset.videoId || null;
+
   const htmlContent = videos.map((item) => buildVideoCardHTML(item)).join("");
   container.innerHTML = htmlContent;
+
+  if (focusedVideoId) {
+    container
+      .querySelector(`.video-card[data-video-id="${CSS.escape(focusedVideoId)}"]`)
+      ?.focus();
+  }
 
   // 構築中の場合、ローディングメッセージを追加
   if (isBuilding) {
