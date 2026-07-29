@@ -327,11 +327,17 @@ function setupLiveChat(videoId) {
   }
 }
 
+const DANMAKU_MAX_ON_SCREEN = 40;
+const DANMAKU_MIN_INTERVAL_MS = 80;
+const DANMAKU_MAX_TEXT_LENGTH = 120;
+let lastDanmakuAt = 0;
+
 /**
  * 弾幕メッセージを処理して表示
+ * 高流量配信でDOMが飽和しないよう、同時表示数と流入間隔を制限する
  */
 function handleDanmakuMessage(data, container) {
-  if (!container || !data || !data.text) return;
+  if (!container || !data || typeof data.text !== 'string' || !data.text) return;
 
   // 弾幕が非表示の場合はスキップ
   if (container.style.display === 'none') return;
@@ -339,10 +345,19 @@ function handleDanmakuMessage(data, container) {
   // 動きの抑制設定時は流れるコメントを出さない
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
+  const now = Date.now();
+  if (now - lastDanmakuAt < DANMAKU_MIN_INTERVAL_MS) return;
+  lastDanmakuAt = now;
+
   try {
+    // 上限超過分は最古のノードから破棄する
+    while (container.childElementCount >= DANMAKU_MAX_ON_SCREEN) {
+      container.firstElementChild?.remove();
+    }
+
     const msgEl = document.createElement('div');
     msgEl.className = 'danmaku-comment';
-    msgEl.textContent = data.text;
+    msgEl.textContent = data.text.slice(0, DANMAKU_MAX_TEXT_LENGTH);
 
     // ランダムな位置にコメントを表示
     const topPercent = Math.floor(5 + Math.random() * 80);
@@ -352,27 +367,14 @@ function handleDanmakuMessage(data, container) {
     const duration = 5 + Math.random() * 4;
     msgEl.style.animationDuration = `${duration}s`;
 
-    container.appendChild(msgEl);
-
-    // アニメーション終了後に削除
+    // アニメーション終了・タイムアウトのいずれか早い方で確実に破棄する
+    const removeTimer = setTimeout(() => msgEl.remove(), (duration + 2) * 1000);
     msgEl.addEventListener('animationend', () => {
-      try {
-        msgEl.remove();
-      } catch (e) {
-        console.error('Error removing danmaku:', e);
-      }
+      clearTimeout(removeTimer);
+      msgEl.remove();
     });
 
-    // タイムアウト時の安全削除（15秒）
-    setTimeout(() => {
-      try {
-        if (msgEl.parentElement) {
-          msgEl.remove();
-        }
-      } catch (e) {
-        console.error('Error timeout removing danmaku:', e);
-      }
-    }, 15000);
+    container.appendChild(msgEl);
   } catch (error) {
     console.error('Error handling danmaku message:', error);
   }

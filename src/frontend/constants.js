@@ -8,7 +8,9 @@
 /* ========================================
    🌐 API設定
    ======================================== */
-const DEFAULT_API_BASE_URL = 'http://192.168.1.33:8010';
+// 開発機固有のLANアドレスを既定に埋め込まない。
+// 同一オリジン配信を第一候補とし、それが取れない場合のみ公開エンドポイントへ向ける。
+const DEFAULT_API_BASE_URL = 'https://youtube.dongurihub.com';
 
 function normalizeApiBaseUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
@@ -33,6 +35,7 @@ function getRuntimeApiBaseUrl() {
   }
 
   const origin = globalThis.location?.origin;
+  // Capacitor の WebView は localhost オリジンで動くが API は同居しないため除外する
   const isLocalWebViewOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin || '');
   if (isLocalWebViewOrigin) {
     return DEFAULT_API_BASE_URL;

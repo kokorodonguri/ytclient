@@ -15,8 +15,6 @@ const APP_ICON_PATH = path.join(__dirname, "assets", "icon.ico");
 const CHROME_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-const ALLOWED_APP_ORIGINS = new Set();
-
 let mainWindow = null;
 let backendProcess = null;
 let isQuitting = false;
@@ -39,11 +37,13 @@ function isSafeExternalUrl(rawUrl) {
   }
 }
 
-function isLocalAppUrl(rawUrl) {
+function isFrontendFileUrl(rawUrl) {
   if (typeof rawUrl !== "string" || rawUrl.trim() === "") return false;
   try {
     const parsed = new URL(rawUrl);
-    return ALLOWED_APP_ORIGINS.has(parsed.origin);
+    if (parsed.protocol !== "file:") return false;
+    const expected = new URL(getFrontendUrl());
+    return decodeURIComponent(parsed.pathname) === decodeURIComponent(expected.pathname);
   } catch {
     return false;
   }
@@ -128,15 +128,6 @@ function loadRuntimeBackendConfig() {
   } else {
     startLocalBackend = isLoopbackBackendUrl(runtimeBackendUrl);
   }
-
-  loadRuntimeAllowedOrigins();
-}
-
-function loadRuntimeAllowedOrigins() {
-  ALLOWED_APP_ORIGINS.clear();
-  ALLOWED_APP_ORIGINS.add(new URL(runtimeBackendUrl).origin);
-  ALLOWED_APP_ORIGINS.add("http://127.0.0.1:8000");
-  ALLOWED_APP_ORIGINS.add("http://localhost:8000");
 }
 
 function writeBackendConfig(config) {
@@ -157,7 +148,6 @@ async function applyBackendConfig(rawBackendUrl, shouldStartLocalBackend) {
     typeof shouldStartLocalBackend === "boolean"
       ? shouldStartLocalBackend && isLoopbackBackendUrl(backendUrl)
       : isLoopbackBackendUrl(backendUrl);
-  loadRuntimeAllowedOrigins();
 
   const configPath = writeBackendConfig({
     backendUrl: runtimeBackendUrl,
@@ -234,28 +224,67 @@ function startBackendProcess() {
   if (!launchConfig) return;
 
   const { command, args, cwd } = launchConfig;
-  backendProcess = spawn(command, args, {
-    cwd,
-    stdio: "ignore",
-    windowsHide: true,
-  });
+  // stdio: "ignore" は本番での原因究明を不可能にするため、ログへ落とす
+  const logPath = path.join(app.getPath("userData"), "backend.log");
+  let stdio = "ignore";
+  let logFd = null;
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    logFd = fs.openSync(logPath, "a");
+    stdio = ["ignore", logFd, logFd];
+  } catch (error) {
+    console.warn("Failed to open backend log, falling back to ignore:", error);
+  }
+
+  backendProcess = spawn(command, args, { cwd, stdio, windowsHide: true });
+
+  const closeLog = () => {
+    if (logFd !== null) {
+      try {
+        fs.closeSync(logFd);
+      } catch {
+        /* noop */
+      }
+      logFd = null;
+    }
+  };
 
   backendProcess.once("error", (error) => {
     console.error("Failed to start backend:", error);
+    closeLog();
     backendProcess = null;
   });
 
   backendProcess.once("exit", (code, signal) => {
     if (!isQuitting && code !== 0 && signal !== "SIGTERM") {
-      console.warn(`Backend exited unexpectedly: code=${code} signal=${signal}`);
+      console.warn(
+        `Backend exited unexpectedly: code=${code} signal=${signal} (log: ${logPath})`,
+      );
     }
+    closeLog();
     backendProcess = null;
   });
 }
 
 function stopBackendProcess() {
   if (!backendProcess || backendProcess.killed) return;
-  backendProcess.kill();
+
+  const pid = backendProcess.pid;
+  // PyInstaller onefile はブートローダが実体を子プロセスで起動するため、
+  // 親だけを kill するとサーバが孤児化してポートを掴み続ける。
+  if (process.platform === "win32" && pid) {
+    try {
+      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch (error) {
+      console.warn("taskkill failed, falling back to kill():", error);
+      backendProcess.kill();
+    }
+  } else {
+    backendProcess.kill();
+  }
   backendProcess = null;
 }
 
@@ -335,13 +364,23 @@ function installSessionHooksOnce() {
 
   const ses = session.defaultSession;
 
-  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
-    if (permission === "media" || permission === "fullscreen") {
-      callback(true);
+  // このアプリはカメラ/マイクを必要としない。全画面のみ、既知オリジンに限って許可する。
+  const FULLSCREEN_ALLOWED_HOSTS = /(^|\.)youtube(-nocookie)?\.com$/i;
+
+  ses.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission !== "fullscreen") {
+      callback(false);
       return;
     }
-    callback(false);
+    try {
+      const { hostname } = new URL(webContents.getURL());
+      callback(FULLSCREEN_ALLOWED_HOSTS.test(hostname));
+    } catch {
+      callback(false);
+    }
   });
+
+  ses.setPermissionCheckHandler((_webContents, permission) => permission === "fullscreen");
 
   ses.webRequest.onBeforeSendHeaders(
     { urls: youtubeUrls },
@@ -486,16 +525,20 @@ function createMainWindow() {
     }
   });
 
+  // preload を持つウィンドウをリモートオリジンで開かせない。外部リンクは常に既定ブラウザへ。
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isLocalAppUrl(url)) return { action: "allow" };
     openExternalSafely(url);
     return { action: "deny" };
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isLocalAppUrl(url)) return;
+    if (isFrontendFileUrl(url)) return;
     event.preventDefault();
     openExternalSafely(url);
+  });
+
+  mainWindow.webContents.on("will-attach-webview", (event) => {
+    event.preventDefault();
   });
 
   mainWindow.on("closed", () => {
@@ -512,18 +555,31 @@ function createMainWindow() {
   return mainWindow;
 }
 
-app.whenReady().then(async () => {
-  loadRuntimeBackendConfig();
-  installSessionHooksOnce();
-  installIpcHandlersOnce();
-  await session.defaultSession.clearCache();
-  startBackendProcess();
-  await waitForBackendReady();
-  createMainWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  // 二重起動はバックエンドのポート衝突と孤児プロセスの原因になるため即終了する
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
   });
-});
+
+  app.whenReady().then(async () => {
+    loadRuntimeBackendConfig();
+    installSessionHooksOnce();
+    installIpcHandlersOnce();
+    startBackendProcess();
+    await waitForBackendReady();
+    createMainWindow();
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    });
+  });
+}
 
 app.on("before-quit", () => {
   isQuitting = true;
@@ -532,9 +588,13 @@ app.on("before-quit", () => {
 
 app.on("web-contents-created", (_event, contents) => {
   contents.setWindowOpenHandler(({ url }) => {
-    if (isLocalAppUrl(url)) return { action: "allow" };
     openExternalSafely(url);
     return { action: "deny" };
+  });
+  contents.on("will-navigate", (event, url) => {
+    if (isFrontendFileUrl(url)) return;
+    event.preventDefault();
+    openExternalSafely(url);
   });
 });
 app.on("window-all-closed", () => {

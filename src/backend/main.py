@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
 import os
 import re
@@ -8,17 +11,18 @@ import time
 import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import pytchat
 import uvicorn
 import yt_dlp
 from fastapi.concurrency import run_in_threadpool
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -28,15 +32,36 @@ from fastapi.staticfiles import StaticFiles
 API_VERSION = "3.2.0"
 SERVICE_NAME = "vspo-client-api"
 API_KEY = os.environ.get("VSPO_API_KEY", "").strip()
+
+# CORS: 明示したオリジンのみ許可する。既定は Electron の file:// と同梱フロントのみ。
+_DEFAULT_ALLOWED_ORIGINS = ["null", "http://127.0.0.1:8010", "http://localhost:8010"]
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("VSPO_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+] or _DEFAULT_ALLOWED_ORIGINS
+
+# 高コスト経路の保護
+COMMENTS_CONCURRENCY = max(1, int(os.environ.get("VSPO_COMMENTS_CONCURRENCY", "4")))
+COMMENTS_CACHE_TTL_SECONDS = max(0, int(os.environ.get("VSPO_COMMENTS_CACHE_TTL", "300")))
+COMMENTS_CACHE_MAX_ENTRIES = 256
+MAX_LIVE_CHAT_CONNECTIONS = max(1, int(os.environ.get("VSPO_MAX_LIVE_CHAT", "16")))
+RATE_LIMIT_REQUESTS = max(1, int(os.environ.get("VSPO_RATE_LIMIT_REQUESTS", "30")))
+RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.environ.get("VSPO_RATE_LIMIT_WINDOW", "60")))
+
 MEMBER_ONLY_KEYWORDS = ["メンバー限定", "メン限", "Member-only", "Membership"]
 DEFAULT_AVATAR_URL = "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y"
 YT_THUMBNAIL_TEMPLATE = "https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 BACKGROUND_REFRESH_SECONDS = 600
+BACKGROUND_ERROR_BACKOFF_SECONDS = 60
+BACKGROUND_CYCLE_TIMEOUT_SECONDS = 900
 INITIAL_REFRESH_DELAY_SECONDS = 2
 MAX_COMMENTS_LIMIT = 100
 STREAM_DETAIL_LIMIT_PER_CHANNEL = 5
 STREAM_DETAIL_WORKERS = 8
 CHANNEL_FETCH_WORKERS = 6
+YT_SOCKET_TIMEOUT_SECONDS = 15
+FEED_XML_MAX_BYTES = 2 * 1024 * 1024
 YOUTUBE_VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 YOUTUBE_CHANNEL_ID_PATTERN = re.compile(r"/channel/(?P<channel_id>[A-Za-z0-9_-]+)$")
 YOUTUBE_FEED_URL_TEMPLATE = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
@@ -79,22 +104,100 @@ def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", str(uuid.uuid4()))
 
 
+def _constant_time_equals(candidate: Optional[str], secret: str) -> bool:
+    if not candidate:
+        return False
+    return hmac.compare_digest(candidate, secret)
+
+
+def _extract_bearer_token(authorization: Optional[str]) -> str:
+    prefix = "Bearer "
+    if authorization and authorization.startswith(prefix):
+        return authorization[len(prefix) :].strip()
+    return ""
+
+
 def require_api_key(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
 ) -> None:
     if not API_KEY:
         return
-
-    bearer_prefix = "Bearer "
-    bearer_token = (
-        authorization[len(bearer_prefix) :].strip()
-        if authorization and authorization.startswith(bearer_prefix)
-        else ""
-    )
-    if x_api_key == API_KEY or bearer_token == API_KEY:
+    if _constant_time_equals(x_api_key, API_KEY):
+        return
+    if _constant_time_equals(_extract_bearer_token(authorization), API_KEY):
         return
     raise HTTPException(status_code=401, detail="Missing or invalid API key")
+
+
+class SlidingWindowRateLimiter:
+    """クライアントIP単位の固定ウィンドウ・レートリミッタ（プロセス内）。"""
+
+    def __init__(self, max_requests: int, window_seconds: int) -> None:
+        self._max_requests = max_requests
+        self._window_seconds = window_seconds
+        self._hits: Dict[str, Deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def check(self, client_key: str) -> bool:
+        now = time.monotonic()
+        cutoff = now - self._window_seconds
+        with self._lock:
+            hits = self._hits[client_key]
+            while hits and hits[0] < cutoff:
+                hits.popleft()
+            if len(hits) >= self._max_requests:
+                return False
+            hits.append(now)
+            if len(self._hits) > 4096:
+                self._prune_locked(cutoff)
+            return True
+
+    def _prune_locked(self, cutoff: float) -> None:
+        stale = [key for key, hits in self._hits.items() if not hits or hits[-1] < cutoff]
+        for key in stale:
+            del self._hits[key]
+
+
+comments_rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
+comments_semaphore = asyncio.Semaphore(COMMENTS_CONCURRENCY)
+live_chat_semaphore = asyncio.Semaphore(MAX_LIVE_CHAT_CONNECTIONS)
+
+_comments_cache: Dict[str, Any] = {}
+_comments_cache_lock = threading.Lock()
+
+
+def _client_key(request: Request) -> str:
+    client = request.client
+    return client.host if client else "unknown"
+
+
+def enforce_rate_limit(request: Request) -> None:
+    if not comments_rate_limiter.check(_client_key(request)):
+        raise HTTPException(status_code=429, detail="Too many requests")
+
+
+def _cache_get(cache_key: str) -> Optional[Dict[str, Any]]:
+    if COMMENTS_CACHE_TTL_SECONDS <= 0:
+        return None
+    with _comments_cache_lock:
+        entry = _comments_cache.get(cache_key)
+        if not entry:
+            return None
+        if time.monotonic() - entry["stored_at"] > COMMENTS_CACHE_TTL_SECONDS:
+            _comments_cache.pop(cache_key, None)
+            return None
+        return entry["payload"]
+
+
+def _cache_put(cache_key: str, payload: Dict[str, Any]) -> None:
+    if COMMENTS_CACHE_TTL_SECONDS <= 0:
+        return
+    with _comments_cache_lock:
+        if len(_comments_cache) >= COMMENTS_CACHE_MAX_ENTRIES:
+            oldest = min(_comments_cache, key=lambda key: _comments_cache[key]["stored_at"])
+            _comments_cache.pop(oldest, None)
+        _comments_cache[cache_key] = {"stored_at": time.monotonic(), "payload": payload}
 
 
 def validate_video_id(video_id: str) -> str:
@@ -166,7 +269,11 @@ def _load_recent_published_timestamps(channel_id: str) -> Dict[str, float]:
     feed_url = YOUTUBE_FEED_URL_TEMPLATE.format(channel_id=channel_id)
     try:
         with urllib.request.urlopen(feed_url, timeout=10) as response:
-            root = ET.fromstring(response.read())
+            raw = response.read(FEED_XML_MAX_BYTES + 1)
+        if len(raw) > FEED_XML_MAX_BYTES:
+            logger.warning("Channel feed too large, skipped: %s", channel_id)
+            return {}
+        root = ET.fromstring(raw)
     except Exception as error:
         logger.warning("Failed to load channel feed %s: %s", channel_id, error)
         return {}
@@ -272,9 +379,11 @@ def _set_feed_building(is_building: bool) -> None:
 
 
 def _mark_feed_error(error: Exception) -> None:
+    # 例外文字列には内部パスやURLが混入し得るため、クライアントへは種別のみ返す
+    logger.warning("Feed build failed: %s", error)
     with feed_lock:
         FEED_DATA["is_building"] = False
-        FEED_DATA["last_error"] = str(error)
+        FEED_DATA["last_error"] = type(error).__name__
 
 
 def _replace_feed_data(
@@ -402,42 +511,55 @@ def _refine_recent_stream_details(
 
 def background_worker():
     time.sleep(INITIAL_REFRESH_DELAY_SECONDS)
-    ydl_opts = {
+    base_ydl_opts = {
         "quiet": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
         "noplaylist": True,
         "ignoreerrors": True,
         "playlistend": 100,
+        "socket_timeout": YT_SOCKET_TIMEOUT_SECONDS,
     }
     while True:
+        cycle_ok = False
         _set_feed_building(True)
         try:
-            temp_official = []
+            temp_official: List[Dict[str, Any]] = []
             with ThreadPoolExecutor(max_workers=CHANNEL_FETCH_WORKERS) as executor:
-                for channel_items in executor.map(
-                    lambda url: _collect_channel_items(url, ydl_opts),
-                    TARGET_CHANNELS,
-                ):
-                    temp_official.extend(channel_items)
+                # yt-dlp は渡された params dict を書き換えるため、必ずスレッド毎にコピーする
+                futures = {
+                    executor.submit(_collect_channel_items, url, dict(base_ydl_opts)): url
+                    for url in TARGET_CHANNELS
+                }
+                deadline = time.monotonic() + BACKGROUND_CYCLE_TIMEOUT_SECONDS
+                for future, url in futures.items():
+                    remaining = max(0.0, deadline - time.monotonic())
+                    try:
+                        temp_official.extend(future.result(timeout=remaining))
+                    except FuturesTimeoutError:
+                        logger.warning("Channel fetch timed out, skipped: %s", url)
+                        future.cancel()
+                    except Exception as error:
+                        logger.warning("Channel fetch failed %s: %s", url, error)
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                temp_clips = []
-                for q in CLIP_QUERIES:
-                    info = _extract_entries(ydl, f"ytsearch30:{q}")
-                    for e in info.get("entries", []):
-                        item = _extract_video_item(e)
+            temp_clips: List[Dict[str, Any]] = []
+            with yt_dlp.YoutubeDL(dict(base_ydl_opts)) as ydl:
+                for query in CLIP_QUERIES:
+                    info = _extract_entries(ydl, f"ytsearch30:{query}")
+                    for entry in info.get("entries", []):
+                        item = _extract_video_item(entry)
                         if item:
                             temp_clips.append(item)
 
             _replace_feed_data(temp_official, temp_clips, is_building=True)
             refined_official = _refine_recent_stream_details(temp_official)
             _replace_feed_data(refined_official, temp_clips)
-        except Exception as e:
+            cycle_ok = True
+        except Exception as error:
             logger.exception("Background worker error")
-            _mark_feed_error(e)
+            _mark_feed_error(error)
 
-        time.sleep(BACKGROUND_REFRESH_SECONDS)
+        time.sleep(BACKGROUND_REFRESH_SECONDS if cycle_ok else BACKGROUND_ERROR_BACKOFF_SECONDS)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -457,15 +579,10 @@ async def add_request_id(request: Request, call_next):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "null",
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-    ],
-    allow_origin_regex=r"^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?$",
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET"],
+    allow_headers=["Authorization", "X-API-Key", "X-Request-ID", "Content-Type"],
 )
 
 
@@ -525,18 +642,34 @@ def read_root():
 
 @app.get("/api/v1/feed", dependencies=[Depends(require_api_key)])
 @app.get("/api/feed", dependencies=[Depends(require_api_key)], include_in_schema=False)
-def get_feed():
-    return {"status": "success", "data": _snapshot_feed_data()}
+def get_feed(request: Request, response: Response):
+    payload = {"status": "success", "data": _snapshot_feed_data()}
+    etag = '"{}"'.format(
+        hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+    )
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    response.headers["ETag"] = etag
+    return payload
 
 
 def _get_video_comments(video_id: str, limit: int) -> Dict[str, Any]:
     validated_video_id = validate_video_id(video_id)
     bounded_limit = max(0, min(limit, MAX_COMMENTS_LIMIT))
+    cache_key = f"{validated_video_id}:{bounded_limit}"
+
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
-        "getcomments": True,
+        "getcomments": bounded_limit > 0,
         "ignoreerrors": True,
+        "socket_timeout": YT_SOCKET_TIMEOUT_SECONDS,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -547,81 +680,113 @@ def _get_video_comments(video_id: str, limit: int) -> Dict[str, Any]:
                 )
                 or {}
             )
-            raw_comments = info.get("comments", [])
-            comments = []
-            for c in raw_comments[:bounded_limit]:
-                comments.append(
-                    {
-                        "author": _safe_str(c.get("author"), "名無し"),
-                        "text": _safe_str(c.get("text")),
-                        "author_thumbnail": _safe_str(c.get("author_thumbnail"))
-                        or DEFAULT_AVATAR_URL,
-                    }
-                )
-            return {
-                "status": "success",
-                "video_id": validated_video_id,
-                "results": comments,
-                "description": _safe_str(info.get("description")),
-            }
-    except Exception as e:
-        logger.warning("Failed to fetch comments for %s: %s", validated_video_id, e)
+    except Exception as error:
+        logger.warning("Failed to fetch comments for %s: %s", validated_video_id, error)
         raise HTTPException(status_code=502, detail="Failed to fetch YouTube comments")
 
+    comments = [
+        {
+            "author": _safe_str(comment.get("author"), "名無し"),
+            "text": _safe_str(comment.get("text")),
+            "author_thumbnail": _safe_str(comment.get("author_thumbnail")) or DEFAULT_AVATAR_URL,
+        }
+        for comment in (info.get("comments") or [])[:bounded_limit]
+    ]
+    payload = {
+        "status": "success",
+        "video_id": validated_video_id,
+        "results": comments,
+        "description": _safe_str(info.get("description")),
+    }
+    _cache_put(cache_key, payload)
+    return payload
 
-@app.get("/api/v1/videos/{video_id}/comments", dependencies=[Depends(require_api_key)])
-def get_video_comments(
+
+async def _get_video_comments_guarded(video_id: str, limit: int) -> Dict[str, Any]:
+    # 同期スクレイプが Starlette の共有スレッドプールを食い潰さないよう同時実行数を絞る
+    try:
+        await asyncio.wait_for(comments_semaphore.acquire(), timeout=10)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Server busy, retry later")
+    try:
+        return await run_in_threadpool(_get_video_comments, video_id, limit)
+    finally:
+        comments_semaphore.release()
+
+
+@app.get(
+    "/api/v1/videos/{video_id}/comments",
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
+)
+async def get_video_comments(
     video_id: str,
     limit: int = Query(default=20, ge=0, le=MAX_COMMENTS_LIMIT),
 ):
-    return _get_video_comments(video_id, limit)
+    return await _get_video_comments_guarded(video_id, limit)
 
 
-@app.get("/comments", dependencies=[Depends(require_api_key)], include_in_schema=False)
-def get_comments(
+@app.get(
+    "/comments",
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
+    include_in_schema=False,
+)
+async def get_comments(
     video_id: str,
     limit: int = Query(default=20, ge=0, le=MAX_COMMENTS_LIMIT),
 ):
-    return _get_video_comments(video_id, limit)
+    return await _get_video_comments_guarded(video_id, limit)
 
 async def _live_chat_ws(websocket: WebSocket, video_id: str):
-    await websocket.accept()
-    if API_KEY and websocket.query_params.get("api_key") != API_KEY:
-        await websocket.close(code=1008, reason="Missing or invalid API key")
-        return
+    # accept 前に検証し、未認証・不正IDにはハンドシェイクを成立させない
+    if API_KEY:
+        provided = websocket.query_params.get("api_key") or websocket.headers.get("x-api-key")
+        if not _constant_time_equals(provided, API_KEY):
+            await websocket.close(code=1008)
+            return
 
     if not _is_valid_youtube_video_id(video_id):
-        await websocket.close(code=1008, reason="Invalid YouTube video ID")
+        await websocket.close(code=1008)
         return
 
+    if live_chat_semaphore.locked():
+        await websocket.close(code=1013)  # Try Again Later
+        return
+
+    await live_chat_semaphore.acquire()
     chat = None
     try:
-        chat = await run_in_threadpool(lambda: pytchat.create(video_id=video_id))
-        while chat.is_alive():
-            items = await run_in_threadpool(
-                lambda: chat.get().sync_items() if chat.is_alive() else []
-            )
-            for c in items:
+        await websocket.accept()
+        chat = await run_in_threadpool(pytchat.create, video_id)
+        while True:
+            is_alive = await run_in_threadpool(chat.is_alive)
+            if not is_alive:
+                break
+            items = await run_in_threadpool(lambda: chat.get().sync_items())
+            for comment in items:
                 await websocket.send_json(
                     {
-                        "author": c.author.name,
-                        "text": c.message,
-                        "author_thumbnail": c.author.imageUrl or DEFAULT_AVATAR_URL,
-                        "timestamp": c.datetime,
+                        "author": comment.author.name,
+                        "text": comment.message,
+                        "author_thumbnail": comment.author.imageUrl or DEFAULT_AVATAR_URL,
+                        "timestamp": comment.datetime,
                     }
                 )
             await asyncio.sleep(1.5)
     except WebSocketDisconnect:
         pass
-    except Exception as e:
-        logger.warning("Chat error for %s: %s", video_id, e)
+    except Exception as error:
+        logger.warning("Chat error for %s: %s", video_id, error)
         try:
-            await websocket.close()
+            await websocket.close(code=1011)
         except RuntimeError:
             pass
     finally:
         if chat:
-            await run_in_threadpool(chat.terminate)
+            try:
+                await run_in_threadpool(chat.terminate)
+            except Exception:
+                logger.debug("Failed to terminate pytchat for %s", video_id, exc_info=True)
+        live_chat_semaphore.release()
 
 
 @app.websocket("/api/v1/ws/live-chat/{video_id}")
@@ -633,18 +798,37 @@ async def live_chat_ws_v1(websocket: WebSocket, video_id: str):
 async def live_chat_ws(websocket: WebSocket, video_id: str):
     await _live_chat_ws(websocket, video_id)
 
-if FRONTEND_DIR.exists():
+# API キー設定時は静的フロントを無認証で配らない（明示オプトインのみ）
+SERVE_FRONTEND = os.environ.get("VSPO_SERVE_FRONTEND", "").strip() == "1" or not API_KEY
+if FRONTEND_DIR.exists() and SERVE_FRONTEND:
     app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="app")
 
-if __name__ == "__main__":
+
+def _resolve_bind(argv: List[str]) -> Tuple[str, int]:
     port = 8010
-    host = "0.0.0.0"
-    if len(sys.argv) > 1:
+    host = "127.0.0.1"  # 既定はループバック。外部公開は明示指定を必須にする
+    if len(argv) > 1:
         try:
-            port = int(sys.argv[1])
+            port = int(argv[1])
         except ValueError:
-            pass
-    if len(sys.argv) > 2:
-        host = sys.argv[2]
-    print(f"Starting server on {host}:{port}...")
-    uvicorn.run(app, host=host, port=port)
+            logger.warning("Invalid port %r, falling back to %d", argv[1], port)
+    if len(argv) > 2 and argv[2].strip():
+        host = argv[2].strip()
+    return host, port
+
+
+if __name__ == "__main__":
+    bind_host, bind_port = _resolve_bind(sys.argv)
+    is_public_bind = bind_host not in {"127.0.0.1", "localhost", "::1"}
+    if is_public_bind and not API_KEY:
+        if os.environ.get("VSPO_ALLOW_INSECURE_BIND", "").strip() != "1":
+            logger.error(
+                "Refusing to bind %s without VSPO_API_KEY. "
+                "Set VSPO_API_KEY, or set VSPO_ALLOW_INSECURE_BIND=1 to override.",
+                bind_host,
+            )
+            sys.exit(1)
+        logger.warning("Binding %s WITHOUT authentication (explicitly allowed).", bind_host)
+
+    logger.info("Starting server on %s:%d", bind_host, bind_port)
+    uvicorn.run(app, host=bind_host, port=bind_port)

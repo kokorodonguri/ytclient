@@ -32,6 +32,17 @@ const MODULE = "RENDERER";
 
 let isInitialized = false;
 let isFeedLoading = false;
+let consecutiveFeedFailures = 0;
+const MAX_FEED_BACKOFF_MS = 60000;
+
+/**
+ * 連続失敗回数に応じた再試行間隔を返す（最大60秒）
+ * @returns {number} 遅延ミリ秒
+ */
+function nextBackoffDelay() {
+  const factor = 2 ** Math.min(consecutiveFeedFailures, 5);
+  return Math.min(TIMING.POLLING_INTERVAL * factor, MAX_FEED_BACKOFF_MS);
+}
 
 // ========================================
 // アプリケーション初期化
@@ -124,6 +135,7 @@ async function loadAndRenderFeed() {
   try {
     log(MODULE, "Fetching feed from server...");
     const feedData = await fetchFeed();
+    consecutiveFeedFailures = 0;
 
     // 状態を更新
     state.setAppData({
@@ -155,16 +167,20 @@ async function loadAndRenderFeed() {
     }
   } catch (error) {
     logError(MODULE, "Feed load error", error);
+    consecutiveFeedFailures += 1;
     const errorMsg = getErrorMessage(error);
     updateFeedStatus({
       status: "offline",
       label: "オフライン",
       summary: errorMsg,
     });
-    showErrorToast(errorMsg);
+    // 失敗が続く間はトーストを出し続けない（初回のみ通知）
+    if (consecutiveFeedFailures === 1) {
+      showErrorToast(errorMsg);
+    }
 
-    // エラー時もポーリングを継続
-    scheduleNextFeedRefresh(TIMING.POLLING_INTERVAL);
+    // エラー時は指数バックオフで再試行を継続
+    scheduleNextFeedRefresh(nextBackoffDelay());
   } finally {
     isFeedLoading = false;
   }
@@ -327,16 +343,17 @@ window.addEventListener("unhandledrejection", (event) => {
 
 // 可視性が変わったときの処理
 document.addEventListener("visibilitychange", () => {
+  if (!isInitialized) return;
+
   if (document.hidden) {
-    log(MODULE, "Document hidden");
-    // オプション: ページが非表示になったときの処理
-  } else {
-    log(MODULE, "Document visible - refreshing feed");
-    // ページが再び表示されたときはフィードを更新
-    if (isInitialized) {
-      loadAndRenderFeed();
-    }
+    // 非表示中はポーリングを止め、無駄なリクエストと再描画を避ける
+    log(MODULE, "Document hidden - pausing polling");
+    state.clearPollingTimer();
+    return;
   }
+
+  log(MODULE, "Document visible - refreshing feed");
+  loadAndRenderFeed();
 });
 
 // エクスポート（テスト用）
