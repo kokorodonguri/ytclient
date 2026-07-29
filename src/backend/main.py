@@ -48,6 +48,10 @@ COMMENTS_CACHE_MAX_ENTRIES = 256
 MAX_LIVE_CHAT_CONNECTIONS = max(1, int(os.environ.get("VSPO_MAX_LIVE_CHAT", "16")))
 RATE_LIMIT_REQUESTS = max(1, int(os.environ.get("VSPO_RATE_LIMIT_REQUESTS", "30")))
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.environ.get("VSPO_RATE_LIMIT_WINDOW", "60")))
+# リバースプロキシ/トンネル配下では peer IP が常にループバックになり、
+# レート制限が全クライアント共有になってしまう。経路が信頼できる場合のみ有効化する。
+TRUST_PROXY_HEADER = os.environ.get("VSPO_TRUST_PROXY_HEADER", "").strip() == "1"
+CLIENT_IP_HEADERS = ("cf-connecting-ip", "x-real-ip", "x-forwarded-for")
 
 MEMBER_ONLY_KEYWORDS = ["メンバー限定", "メン限", "Member-only", "Membership"]
 DEFAULT_AVATAR_URL = "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y"
@@ -168,6 +172,12 @@ _comments_cache_lock = threading.Lock()
 
 
 def _client_key(request: Request) -> str:
+    if TRUST_PROXY_HEADER:
+        for header in CLIENT_IP_HEADERS:
+            value = request.headers.get(header, "").strip()
+            if value:
+                # X-Forwarded-For は "client, proxy1, proxy2" 形式
+                return value.split(",")[0].strip()
     client = request.client
     return client.host if client else "unknown"
 

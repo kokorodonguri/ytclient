@@ -141,6 +141,29 @@ Standard codes:
 - `UPSTREAM_ERROR`
 - `INTERNAL_ERROR`
 
+## Configuration
+
+All settings are environment variables read at startup.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VSPO_API_KEY` | *(empty)* | Enables authentication. Required for any non-loopback bind. |
+| `VSPO_ALLOWED_ORIGINS` | `null,http://127.0.0.1:8010,http://localhost:8010` | Comma-separated CORS allowlist. |
+| `VSPO_TRUST_PROXY_HEADER` | `0` | Set to `1` only when the origin is reachable exclusively through a trusted proxy/tunnel. Makes rate limiting use `CF-Connecting-IP` / `X-Real-IP` / `X-Forwarded-For`. |
+| `VSPO_COMMENTS_CONCURRENCY` | `4` | Max simultaneous comment scrapes. |
+| `VSPO_COMMENTS_CACHE_TTL` | `300` | Comment cache lifetime in seconds; `0` disables. |
+| `VSPO_MAX_LIVE_CHAT` | `16` | Max concurrent live-chat WebSockets. |
+| `VSPO_RATE_LIMIT_REQUESTS` | `30` | Comment requests allowed per window, per client. |
+| `VSPO_RATE_LIMIT_WINDOW` | `60` | Rate limit window in seconds. |
+| `VSPO_SERVE_FRONTEND` | *(unset)* | Set to `1` to serve `/app` even when a key is configured. |
+| `VSPO_ALLOW_INSECURE_BIND` | *(unset)* | Set to `1` to permit a public bind with no key. Not recommended. |
+
+Binding defaults to `127.0.0.1`. A non-loopback bind without `VSPO_API_KEY`
+exits with an error unless `VSPO_ALLOW_INSECURE_BIND=1`.
+
+`/app` is not mounted when `VSPO_API_KEY` is set, because static files cannot
+carry the auth dependency.
+
 ## Operational Notes
 
 - The backend owns YouTube scraping and exposes only cached feed data to clients.
