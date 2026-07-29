@@ -23,8 +23,8 @@
     --primary-lighter: #fbf1f8;
     /* テキスト用の濃色プライマリ (WCAG AA 4.5:1 以上を担保) */
     --primary-text: #be185d;
-    --primary-strong: #be185d;
-    --primary-strong-hover: #9d174d;
+    --primary-strong: #db2777;
+    --primary-strong-hover: #be185d;
 
     --secondary: #0891b2;
     --success: #10b981;
@@ -46,9 +46,9 @@
     --bg-overlay: rgba(0, 0, 0, 0.4);
 
     /* ✍️ テキストカラー */
-    --text-primary: #1f2937;
-    --text-secondary: #4b5563;
-    --text-tertiary: #6b7280;
+    --text-primary: #374151;
+    --text-secondary: #6b7280;
+    --text-tertiary: #71717a;
     --text-inverse: #ffffff;
 
     /* 🎯 ボーダー */
@@ -105,19 +105,19 @@
         --bg-hover: #252730;
         --bg-active: #30333d;
 
-        --text-primary: #f6f4f7;
-        --text-secondary: #cbc6d0;
+        --text-primary: #d6d3da;
+        --text-secondary: #a8a3b0;
         --text-tertiary: #8f8998;
 
         --border-color: rgba(255, 255, 255, 0.09);
         --border-strong: rgba(255, 255, 255, 0.16);
 
         --primary-light: rgba(236, 72, 153, 0.15);
-        --primary-text: #f9a8d4;
-        --success-text: #6ee7b7;
-        --warning-text: #fcd34d;
-        --error-text: #fca5a5;
-        --info-text: #93c5fd;
+        --primary-text: #f472b6;
+        --success-text: #10b981;
+        --warning-text: #f59e0b;
+        --error-text: #f87171;
+        --info-text: #60a5fa;
 
         --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
         --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
@@ -831,7 +831,7 @@ main {
 }
 
 .live-badge {
-    background: #b91c1c;
+    background: #dc2626;
 }
 
 .type-badge {
@@ -839,11 +839,11 @@ main {
 }
 
 .live-type-badge {
-    background: #b91c1c;
+    background: #dc2626;
 }
 
 .upcoming-type-badge {
-    background: #1d4ed8;
+    background: #2563eb;
 }
 
 .archive-type-badge {
@@ -855,7 +855,7 @@ main {
 }
 
 .upcoming-badge {
-    background: #1d4ed8;
+    background: #2563eb;
 }
 
 .time-badge {
