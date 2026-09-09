@@ -176,6 +176,7 @@ export async function fetchFeed() {
 
     const url = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.FEED}`;
     const response = await fetchWithTimeout(url);
+    const etag = response.headers.get("ETag") || "";
     const data = await handleApiResponse(response);
 
     if (data && data.data) {
@@ -185,6 +186,8 @@ export async function fetchFeed() {
         is_building: Boolean(data.data.is_building),
         last_updated: data.data.last_updated || null,
         last_error: data.data.last_error || null,
+        // 中身が前回と同一かの判定に使う。サーバが出さない場合は空文字
+        etag,
       };
 
       log(
@@ -232,6 +235,33 @@ export async function fetchVideoComments(videoId, limit = 0) {
 }
 
 /**
+ * 配信中の再生用ストリーム (HLS) または動画ストリーム情報を取得
+ * 配信中は HLS (ABRマスタープレイリスト)、開始前は 409 (upcoming) を返す。
+ * フロントエンドは HLS が利用可能な場合にネイティブ高画質再生を行い、それ以外は iframe にフォールバックする。
+ * @param {string} videoId - YouTubeビデオID
+ * @returns {Promise<{url: string, protocol: string, height: number|null, is_live: boolean, title: string}>}
+ */
+export async function fetchVideoStream(videoId) {
+  if (!videoId || typeof videoId !== "string") {
+    throw new Error("Invalid video ID");
+  }
+
+  const url = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.STREAM(videoId)}`;
+  const response = await fetchWithTimeout(url);
+  const data = await handleApiResponse(response);
+
+  const stream = data?.data;
+  if (!stream?.url) {
+    const error = new Error("再生URLを取得できませんでした");
+    error.status = 404;
+    throw error;
+  }
+
+  log(MODULE, `Stream resolved for video: ${videoId}`);
+  return stream;
+}
+
+/**
  * ビデオの説明文を取得（コメントなし）
  * @param {string} videoId - YouTubeビデオID
  * @returns {Promise<string|null>} 説明文またはnull
@@ -267,15 +297,22 @@ export function createLiveChatWebSocket(videoId, handlers = {}) {
     log(MODULE, `Creating WebSocket for video: ${videoId}`);
 
     const wsBaseUrl = API_CONFIG.BASE_URL.replace(/^http/, "ws");
-    // WebSocket はブラウザからカスタムヘッダーを付けられないため、
-    // 認証はクエリ文字列で渡す（そのため wss/TLS が前提）
-    const authQuery = API_CONFIG.API_KEY
-      ? `?api_key=${encodeURIComponent(API_CONFIG.API_KEY)}`
-      : "";
-    const wsUrl = `${wsBaseUrl}${API_CONFIG.ENDPOINTS.LIVE_CHAT(videoId)}${authQuery}`;
+    // WebSocket はブラウザからカスタムヘッダーを付けられない。クエリ文字列は
+    // プロキシ/トンネルのアクセスログにフルURLごと残ることがあるため使わず、
+    // 接続確立後の最初のメッセージでAPIキーを送る（サーバー側もそれを待つ）
+    const wsUrl = `${wsBaseUrl}${API_CONFIG.ENDPOINTS.LIVE_CHAT(videoId)}`;
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
+      if (API_CONFIG.API_KEY) {
+        try {
+          socket.send(
+            JSON.stringify({ type: "auth", api_key: API_CONFIG.API_KEY }),
+          );
+        } catch (error) {
+          logError(MODULE, "Failed to send WebSocket auth message", error);
+        }
+      }
       log(MODULE, `WebSocket connected for video ${videoId}`);
     };
 
@@ -468,6 +505,7 @@ export default {
   closeWebSocket,
   testApiConnection,
   openExternalUrl,
+  fetchVideoStream,
   getYouTubeEmbedUrl,
   getYouTubeWatchUrl,
   getYouTubeChannelUrl,

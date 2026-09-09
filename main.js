@@ -6,20 +6,43 @@ const https = require("https");
 const path = require("path");
 
 const DEFAULT_BACKEND_PORT = 8010;
-const DEFAULT_BACKEND_URL = `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`;
+const DEFAULT_BACKEND_URL = "https://youtube.dongurihub.com";
 const BACKEND_READY_TIMEOUT_MS = 15000;
 const BACKEND_READY_POLL_MS = 300;
 const APP_ID = "com.vspo.client";
 const APP_ICON_PATH = path.join(__dirname, "assets", "icon.ico");
 
+const FRONTEND_MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".md": "text/plain; charset=utf-8",
+};
+
 const CHROME_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+// file:// の画面から YouTube を開くときに送る Referer
+const EMBED_REFERER = "https://www.youtube.com/";
+
 
 let mainWindow = null;
 let backendProcess = null;
 let isQuitting = false;
 let sessionHooksInstalled = false;
 let ipcHandlersInstalled = false;
+let frontendServer = null;
+let frontendServerOrigin = null;
+let frontendServerStarting = null;
 let runtimeBackendUrl = DEFAULT_BACKEND_URL;
 let runtimeApiKey = "";
 let startLocalBackend = false;
@@ -38,10 +61,16 @@ function isSafeExternalUrl(rawUrl) {
   }
 }
 
-function isFrontendFileUrl(rawUrl) {
+function isFrontendUrl(rawUrl) {
   if (typeof rawUrl !== "string" || rawUrl.trim() === "") return false;
   try {
     const parsed = new URL(rawUrl);
+
+    // ループバック配信時は、同一オリジンかつルートまたは index.html を許可
+    if (frontendServerOrigin && parsed.origin === frontendServerOrigin) {
+      return parsed.pathname === "/" || parsed.pathname === "/index.html";
+    }
+
     if (parsed.protocol !== "file:") return false;
     const expected = new URL(getFrontendUrl());
     return decodeURIComponent(parsed.pathname) === decodeURIComponent(expected.pathname);
@@ -59,7 +88,9 @@ function normalizeBackendUrl(rawUrl) {
   try {
     const parsed = new URL(candidate);
     if (!["http:", "https:"].includes(parsed.protocol)) return null;
-    if (!parsed.port) {
+    // スキーム既定ポートで到達する公開エンドポイント (https://example.com) に
+    // 8010 を付けると接続できなくなるため、既定ポートの補完は http のみに限る。
+    if (!parsed.port && parsed.protocol === "http:") {
       parsed.port = String(DEFAULT_BACKEND_PORT);
     }
     parsed.pathname = parsed.pathname.replace(/\/+$/, "");
@@ -130,6 +161,16 @@ function loadRuntimeBackendConfig() {
   } else {
     startLocalBackend = isLoopbackBackendUrl(runtimeBackendUrl);
   }
+
+  if (!configuredUrl) {
+    // 設定ファイルも環境変数も無い初回起動。既定の公開エンドポイントに
+    // 接続するため、開発者が意図せずローカルバックエンドの起動を
+    // 期待して混乱しないよう明示しておく
+    console.log(
+      `No backend config found, defaulting to ${DEFAULT_BACKEND_URL} ` +
+        "(local backend will not be started; use Settings or VSPO_BACKEND_URL to point at a loopback backend).",
+    );
+  }
 }
 
 function writeBackendConfig(config) {
@@ -183,10 +224,92 @@ async function applyBackendConfig(rawBackendUrl, shouldStartLocalBackend, rawApi
   };
 }
 
+function getFrontendDir() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "frontend")
+    : path.join(__dirname, "src", "frontend");
+}
+
+// file:// から読み込むと YouTube 埋め込みが「この動画は再生できません
+// (152/153)」で止まる。オリジンも Referer も無い要求を YouTube が
+// 不正な埋め込みとして弾くため。ループバックの HTTP で配ると
+// http://127.0.0.1:<port> という実体のあるオリジンになり、通常の
+// ブラウザと同じ扱いになる (実測で再生できることを確認済み)。
+function startFrontendServer() {
+  if (frontendServerOrigin) return Promise.resolve(frontendServerOrigin);
+  if (frontendServerStarting) return frontendServerStarting;
+
+  const root = getFrontendDir();
+
+  frontendServerStarting = new Promise((resolve) => {
+    const server = http.createServer((request, response) => {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        response.writeHead(405).end();
+        return;
+      }
+
+      let pathname;
+      try {
+        pathname = decodeURIComponent(
+          new URL(request.url, "http://127.0.0.1").pathname,
+        );
+      } catch {
+        response.writeHead(400).end();
+        return;
+      }
+
+      if (pathname === "/") pathname = "/index.html";
+
+      // 配信対象はフロントエンドのディレクトリ配下だけに閉じる
+      const target = path.join(root, pathname);
+      const relative = path.relative(root, target);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        response.writeHead(403).end();
+        return;
+      }
+
+      fs.readFile(target, (error, body) => {
+        if (error) {
+          response.writeHead(404).end();
+          return;
+        }
+        response.writeHead(200, {
+          "Content-Type": FRONTEND_MIME_TYPES[path.extname(target).toLowerCase()]
+            || "application/octet-stream",
+          "Cache-Control": "no-store",
+        });
+        response.end(request.method === "HEAD" ? undefined : body);
+      });
+    });
+
+    server.on("error", (error) => {
+      console.warn("Frontend server failed to start:", error);
+      frontendServerStarting = null;
+      resolve(null);
+    });
+
+    // ループバックのみ。ポートは OS に選ばせる
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      frontendServer = server;
+      frontendServerOrigin = `http://127.0.0.1:${port}`;
+      resolve(frontendServerOrigin);
+    });
+  });
+
+  return frontendServerStarting;
+}
+
 function getFrontendUrl() {
-  const frontendPath = app.isPackaged
-    ? path.join(process.resourcesPath, "frontend", "index.html")
-    : path.join(__dirname, "src", "frontend", "index.html");
+  if (frontendServerOrigin) {
+    const url = new URL(`${frontendServerOrigin}/index.html`);
+    url.searchParams.set("apiBaseUrl", runtimeBackendUrl);
+    return url.toString();
+  }
+
+  // 配信サーバが起動できなかったときの保険。埋め込みは動かないが、
+  // 一覧と外部ブラウザでの再生は使える。
+  const frontendPath = path.join(getFrontendDir(), "index.html");
   const frontendUrl = new URL(`file:///${frontendPath.replace(/\\/g, "/")}`);
   frontendUrl.searchParams.set("apiBaseUrl", runtimeBackendUrl);
   return frontendUrl.toString();
@@ -406,6 +529,21 @@ function installSessionHooksOnce() {
     (details, callback) => {
       const requestHeaders = { ...details.requestHeaders };
       requestHeaders["User-Agent"] = CHROME_UA;
+
+      // file:// またはループバック配信 (127.0.0.1) からの埋め込み iframe 要求には
+      // YouTube が許容する Referer が付かない、または不正な埋め込みとみなされ
+      // 「動画プレーヤーの設定エラー (152/153)」で止まる。埋め込み元を youtube.com に明示する。
+      const referer = requestHeaders.Referer || requestHeaders.referer;
+      const isFromFrontend = Boolean(
+        !referer ||
+        /^file:/i.test(referer) ||
+        (frontendServerOrigin && referer.startsWith(frontendServerOrigin))
+      );
+      if (isFromFrontend) {
+        delete requestHeaders.referer;
+        requestHeaders.Referer = EMBED_REFERER;
+      }
+
       callback({ cancel: false, requestHeaders });
     },
   );
@@ -443,6 +581,35 @@ function installSessionHooksOnce() {
           }
         }
       }
+      callback({ responseHeaders });
+    },
+  );
+
+  // 配信の HLS は hls.js が XHR で取りに行く。画面は file:// なので Origin は
+  // null になり、googlevideo は CORS ヘッダを返さないため既定では弾かれる。
+  // 該当ホストの応答にだけ許可ヘッダを差し込む (既存値は上書きして重複を避ける)。
+  ses.webRequest.onHeadersReceived(
+    {
+      urls: [
+        "*://*.googlevideo.com/*",
+        "*://manifest.googlevideo.com/*",
+      ],
+    },
+    (details, callback) => {
+      const responseHeaders = { ...details.responseHeaders };
+      for (const key of Object.keys(responseHeaders)) {
+        const lowerKey = key.toLowerCase();
+        if (
+          lowerKey === "access-control-allow-origin" ||
+          lowerKey === "access-control-allow-headers" ||
+          lowerKey === "access-control-expose-headers"
+        ) {
+          delete responseHeaders[key];
+        }
+      }
+      responseHeaders["Access-Control-Allow-Origin"] = ["*"];
+      responseHeaders["Access-Control-Allow-Headers"] = ["*"];
+      responseHeaders["Access-Control-Expose-Headers"] = ["*"];
       callback({ responseHeaders });
     },
   );
@@ -556,7 +723,7 @@ function createMainWindow() {
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isFrontendFileUrl(url)) return;
+    if (isFrontendUrl(url)) return;
     event.preventDefault();
     openExternalSafely(url);
   });
@@ -596,6 +763,8 @@ if (!hasSingleInstanceLock) {
     loadRuntimeBackendConfig();
     installSessionHooksOnce();
     installIpcHandlersOnce();
+    // 画面の配信サーバはウィンドウを作る前に上げる (URL が決まらないため)
+    await startFrontendServer();
     startBackendProcess();
     await waitForBackendReady();
     createMainWindow();
@@ -608,6 +777,14 @@ if (!hasSingleInstanceLock) {
 app.on("before-quit", () => {
   isQuitting = true;
   stopBackendProcess();
+  if (frontendServer) {
+    try {
+      frontendServer.close();
+    } catch (error) {
+      console.warn("Failed to close frontend server", error);
+    }
+    frontendServer = null;
+  }
 });
 
 app.on("web-contents-created", (_event, contents) => {
@@ -616,7 +793,7 @@ app.on("web-contents-created", (_event, contents) => {
     return { action: "deny" };
   });
   contents.on("will-navigate", (event, url) => {
-    if (isFrontendFileUrl(url)) return;
+    if (isFrontendUrl(url)) return;
     event.preventDefault();
     openExternalSafely(url);
   });

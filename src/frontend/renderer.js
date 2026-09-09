@@ -38,6 +38,10 @@ const MODULE = "RENDERER";
 let isInitialized = false;
 let isFeedLoading = false;
 let consecutiveFeedFailures = 0;
+// 直前に描画したフィードの ETag。ポーリングは 5 秒ごとに走るが、
+// 中身が変わるのは収集ワーカーの 1 周期ごと。同じ ETag なら
+// 状態の入れ替えもグリッドの作り直しも丸ごと省く
+let lastRenderedEtag = "";
 const MAX_FEED_BACKOFF_MS = 60000;
 
 /**
@@ -146,6 +150,20 @@ async function loadAndRenderFeed() {
     const feedData = await fetchFeed();
     consecutiveFeedFailures = 0;
 
+    // 内容が前回と同一なら、状態の差し替えも再描画も行わない。
+    // 4000 件規模では 1 回の作り直しに 400ms 近くかかるため、
+    // 変化していないフレームを描き直さないことが最も効く。
+    const unchanged =
+      Boolean(feedData.etag) && feedData.etag === lastRenderedEtag;
+
+    if (unchanged) {
+      log(MODULE, "Feed unchanged - skipping re-render");
+      if (state.appData.is_building) {
+        scheduleNextFeedRefresh(TIMING.POLLING_INTERVAL);
+      }
+      return;
+    }
+
     // 状態を更新
     state.setAppData({
       official: feedData.official || [],
@@ -160,6 +178,8 @@ async function loadAndRenderFeed() {
       clips: state.appData.clips.length,
       is_building: state.appData.is_building,
     });
+
+    lastRenderedEtag = feedData.etag || "";
 
     // グリッドをレンダリング
     renderGridWithState();

@@ -4,27 +4,34 @@
  * 複数のモジュールで使用される関数を一元管理
  */
 
+const HTML_ESCAPE_MAP = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+const HTML_ESCAPE_REGEX = /[&<>"']/g;
+
 /**
- * HTML文字列をエスケープ
- * XSS対策として使用
+ * HTML文字列をエスケープ (高速な正規表現置換)
+ * DOM 生成 (createElement/innerText) を完全排除し GC とレイアウト負荷をゼロにする
  * @param {string} str - エスケープする文字列
  * @returns {string} エスケープされた文字列
  */
 export function escapeHTML(str) {
   if (!str) return '';
-  const div = document.createElement('div');
-  div.innerText = str;
-  return div.innerHTML;
+  return String(str).replace(HTML_ESCAPE_REGEX, (ch) => HTML_ESCAPE_MAP[ch]);
 }
 
 /**
- * 属性値をエスケープ
- * HTML属性内で使用する値のエスケープ
+ * 属性値をエスケープ (escapeHTMLと同一の文字セットをエスケープ)
  * @param {string} str - エスケープする文字列
  * @returns {string} エスケープされた文字列
  */
 export function escapeAttribute(str) {
-  return escapeHTML(str).replace(/"/g, '&quot;');
+  if (!str) return '';
+  return String(str).replace(HTML_ESCAPE_REGEX, (ch) => HTML_ESCAPE_MAP[ch]);
 }
 
 /**
@@ -73,12 +80,13 @@ export function toggleClass(element, className, force) {
 /**
  * 相対時間をフォーマット（例：「3時間前」）
  * @param {number} timestamp - Unix timestamp (秒)
+ * @param {number} [currentUnixSeconds] - 事前計算済みの現在Unix秒（ループ内のDate.now()呼び出しを省く）
  * @returns {string} フォーマットされた相対時間
  */
-export function formatRelativeTime(timestamp) {
+export function formatRelativeTime(timestamp, currentUnixSeconds) {
   if (!timestamp || timestamp <= 0) return '';
 
-  const now = Math.floor(Date.now() / 1000);
+  const now = currentUnixSeconds || Math.floor(Date.now() / 1000);
   const diff = now - timestamp;
 
   if (diff < 60) return 'たった今';

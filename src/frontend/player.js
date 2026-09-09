@@ -10,26 +10,60 @@ import {
   showToast,
   showDescriptionContainer,
   hideDescriptionContainer,
+  setPlaybackCleanup,
 } from './dom.js';
 import {
   openExternalUrl,
-  getYouTubeWatchUrl,
   getYouTubeEmbedUrl,
+  getYouTubeWatchUrl,
   createLiveChatWebSocket,
   closeWebSocket,
   fetchVideoDescription,
+  fetchVideoStream,
 } from './api.js';
 import state from './state.js';
 import { restoreFocusToCard } from './ui.js';
-import { escapeAttribute } from './utils.js';
+import { escapeAttribute, escapeHTML } from './utils.js';
 
-/**
- * ビデオプレイヤーを描画
- * @param {string} videoId - YouTubeビデオID
- * @param {string} title - ビデオタイトル
- * @param {boolean} isLive - ライブ配信かどうか
- */
-export async function renderPlayer(videoId, title, isLive) {
+let activeHlsInstances = [];
+
+// プレイヤーを閉じるときに HLS インスタンス、video要素、iframe を確実に停止・破棄する
+function destroyActivePlayback() {
+  while (activeHlsInstances.length > 0) {
+    const hls = activeHlsInstances.pop();
+    try {
+      hls.destroy();
+    } catch (error) {
+      console.warn('Failed to destroy Hls instance', error);
+    }
+  }
+
+  document
+    .querySelectorAll('#player-container video')
+    .forEach((video) => {
+      try {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      } catch (error) {
+        console.warn('Failed to stop video playback', error);
+      }
+    });
+
+  document
+    .querySelectorAll('#player-container iframe')
+    .forEach((frame) => {
+      try {
+        frame.src = 'about:blank';
+      } catch (error) {
+        console.warn('Failed to stop embedded player', error);
+      }
+    });
+}
+
+setPlaybackCleanup(destroyActivePlayback);
+
+export async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
   if (!videoId || typeof videoId !== 'string') {
     console.error('Invalid video ID');
     showToast('ビデオIDが無効です。');
@@ -37,16 +71,44 @@ export async function renderPlayer(videoId, title, isLive) {
   }
 
   try {
-    const embedUrl = getYouTubeEmbedUrl(videoId);
     const watchUrl = getYouTubeWatchUrl(videoId);
+    const embedUrl = getYouTubeEmbedUrl(videoId);
+
+    // ライブ配信時は HLS ストリーム解決を優先試行 (明示的に埋め込み指定された場合を除く)
+    let streamUrl = null;
+    if (isLive && !forceEmbed) {
+      try {
+        const stream = await fetchVideoStream(videoId);
+        if (stream && stream.protocol === 'hls' && stream.url) {
+          streamUrl = stream.url;
+        }
+      } catch (streamError) {
+        console.warn('HLS stream fetch failed, falling back to embed:', streamError);
+      }
+    }
+
+    const useHls = Boolean(streamUrl);
 
     // プレイヤーHTMLを生成
-    const playerHTML = generatePlayerHTML(embedUrl, isLive, title);
+    const playerHTML = generatePlayerHTML({
+      embedUrl,
+      isLive,
+      title,
+      useHls,
+    });
     setPlayerHTML(playerHTML);
     updatePlayerVideoTitle(title);
 
     // プレイヤー要素の参照を取得してイベントを設定
-    setupPlayerEventHandlers(videoId, title, watchUrl, embedUrl, isLive);
+    setupPlayerEventHandlers({
+      videoId,
+      title,
+      watchUrl,
+      embedUrl,
+      isLive,
+      streamUrl,
+      useHls,
+    });
 
     // ライブ配信の場合、弾幕WebSocketを接続
     if (isLive) {
@@ -63,13 +125,18 @@ export async function renderPlayer(videoId, title, isLive) {
 
 /**
  * プレイヤーHTMLを生成
- * @param {string} embedUrl - YouTube埋め込みURL
- * @param {boolean} isLive - ライブ配信かどうか
+ * @param {Object} options
  * @returns {string}
  */
-function generatePlayerHTML(embedUrl, isLive, title) {
-  const toggleDanmakuButton = isLive
-    ? '<button id="toggle-danmaku-btn" class="player-secondary-btn active" type="button" aria-pressed="true"><span aria-hidden="true">💬</span> 弾幕ON</button>'
+function generatePlayerHTML({ embedUrl, isLive, title, useHls }) {
+  const liveActions = isLive
+    ? `
+            <button id="toggle-danmaku-btn" class="player-secondary-btn active" type="button" aria-pressed="true">弾幕 ON</button>`
+    : '';
+
+  const switchModeBtn = isLive
+    ? `
+            <button id="switch-player-mode-btn" class="player-secondary-btn" type="button">${useHls ? '埋め込みに切替' : 'HLSに切替'}</button>`
     : '';
 
   // 弾幕は流れるコメントの視覚演出であり、ATには読ませない
@@ -77,31 +144,44 @@ function generatePlayerHTML(embedUrl, isLive, title) {
     ? '<div class="danmaku-container" id="danmaku-container" aria-hidden="true"></div>'
     : '';
 
+  const statusLabel = useHls
+    ? 'HLS ネイティブ再生中 (高画質・ABR)'
+    : 'YouTube 埋め込み...';
+
+  const mediaContent = useHls
+    ? `<video
+         id="hls-player-video"
+         class="native-player"
+         controls
+         autoplay
+         playsinline
+       ></video>`
+    : `<iframe
+         id="youtube-player-iframe"
+         title="${escapeAttribute(title || '')} - YouTubeプレイヤー"
+         src="${embedUrl}"
+         loading="eager"
+         referrerpolicy="strict-origin-when-cross-origin"
+         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+         allowfullscreen>
+       </iframe>`;
+
   return `
     <div class="player-layout">
       <div class="player-main">
-        <div class="player-embed-wrap">
-          <div class="player-embed-frame">
-            <iframe
-              id="youtube-player-iframe"
-              title="${escapeAttribute(title || '')} - YouTubeプレイヤー"
-              src="${embedUrl}"
-              loading="eager"
-              referrerpolicy="strict-origin-when-cross-origin"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-              allowfullscreen>
-            </iframe>
-          </div>
-          ${danmakuContainer}
-        </div>
         <div class="player-status-bar">
-          <span class="player-panel-status">YouTube 埋め込み...</span>
-          <div class="player-fallback-actions">
-            ${toggleDanmakuButton}
+          <span class="player-panel-status" role="status" aria-live="polite">${statusLabel}</span>
+          <div class="player-fallback-actions">${liveActions}${switchModeBtn}
             <button id="add-split-btn" class="player-secondary-btn" type="button">2画面に追加</button>
             <button id="reload-player-btn" class="player-secondary-btn" type="button">再読込</button>
             <button id="open-in-browser-btn" class="player-fallback-open-btn" type="button">ブラウザで開く</button>
           </div>
+        </div>
+        <div class="player-embed-wrap">
+          <div class="player-embed-frame">
+            ${mediaContent}
+          </div>
+          ${danmakuContainer}
         </div>
       </div>
     </div>
@@ -113,7 +193,7 @@ function generateSplitPlayerHTML(primaryVideo, secondaryVideo) {
     .map(
       (video, index) => `
         <section class="split-player-panel" data-split-index="${index}">
-          <h3 class="split-player-title">${escapeHtml(video.title)}</h3>
+          <h3 class="split-player-title">${escapeHTML(video.title)}</h3>
           <div class="player-embed-wrap">
             <div class="player-embed-frame">
               <iframe
@@ -129,7 +209,7 @@ function generateSplitPlayerHTML(primaryVideo, secondaryVideo) {
             </div>
           </div>
           <div class="player-status-bar split-player-status-bar">
-            <span class="player-panel-status">YouTube 埋め込み...</span>
+            <span class="player-panel-status" role="status" aria-live="polite">YouTube 埋め込み...</span>
             <div class="player-fallback-actions">
               <button class="player-secondary-btn split-reload-btn" type="button" data-split-index="${index}">再読込</button>
               <button class="player-fallback-open-btn split-open-btn" type="button" data-split-index="${index}">ブラウザで開く</button>
@@ -170,15 +250,63 @@ export async function renderSplitPlayer(primaryVideo, secondaryVideo) {
 /**
  * プレイヤーのイベントハンドラーを設定
  */
-function setupPlayerEventHandlers(videoId, title, watchUrl, embedUrl, isLive) {
+function setupPlayerEventHandlers({ videoId, title, watchUrl, embedUrl, isLive, streamUrl, useHls }) {
   const statusEl = document.querySelector('.player-panel-status');
   const iframeEl = document.getElementById('youtube-player-iframe');
+  const videoEl = document.getElementById('hls-player-video');
   const reloadBtn = document.getElementById('reload-player-btn');
   const openBtn = document.getElementById('open-in-browser-btn');
   const toggleDanmakuBtn = document.getElementById('toggle-danmaku-btn');
+  const switchModeBtn = document.getElementById('switch-player-mode-btn');
   const addSplitBtn = document.getElementById('add-split-btn');
 
-  // iframe読み込み完了
+  const openInBrowser = async () => {
+    try {
+      await openExternalUrl(watchUrl);
+    } catch (error) {
+      console.error('Error opening URL:', error);
+      window.open(watchUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  // HLS再生の初期化
+  if (useHls && videoEl && streamUrl) {
+    if (window.Hls && window.Hls.isSupported()) {
+      const hls = new window.Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 90,
+      });
+      activeHlsInstances.push(hls);
+      hls.loadSource(streamUrl);
+      hls.attachMedia(videoEl);
+
+      hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+        if (statusEl) statusEl.textContent = 'HLS ネイティブ再生中 (高画質・ABR)';
+        videoEl.play().catch((err) => console.warn('Autoplay prevented', err));
+      });
+
+      hls.on(window.Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          console.warn('Fatal HLS error, falling back to iframe', data);
+          if (statusEl) statusEl.textContent = 'HLS エラーのため埋め込みに切替中...';
+          renderPlayer(videoId, title, isLive, true);
+        }
+      });
+    } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      videoEl.src = streamUrl;
+      videoEl.addEventListener('loadedmetadata', () => {
+        if (statusEl) statusEl.textContent = 'HLS ネイティブ再生中';
+        videoEl.play().catch((err) => console.warn('Autoplay prevented', err));
+      });
+      videoEl.addEventListener('error', () => {
+        console.warn('Native HLS error, falling back to iframe');
+        renderPlayer(videoId, title, isLive, true);
+      });
+    }
+  }
+
+  // 埋め込み iframe のイベント
   if (iframeEl) {
     iframeEl.addEventListener('load', () => {
       if (statusEl) {
@@ -194,25 +322,27 @@ function setupPlayerEventHandlers(videoId, title, watchUrl, embedUrl, isLive) {
   }
 
   // リロードボタン
-  if (reloadBtn && iframeEl) {
+  if (reloadBtn) {
     reloadBtn.addEventListener('click', () => {
-      iframeEl.src = embedUrl;
-      if (statusEl) {
-        statusEl.textContent = 'プレイヤーを再読込中...';
+      if (useHls) {
+        renderPlayer(videoId, title, isLive, false);
+      } else if (iframeEl) {
+        iframeEl.src = embedUrl;
+        if (statusEl) statusEl.textContent = 'プレイヤーを再読込中...';
       }
+    });
+  }
+
+  // 再生モード切替ボタン (HLS ↔ 埋め込み)
+  if (switchModeBtn) {
+    switchModeBtn.addEventListener('click', () => {
+      renderPlayer(videoId, title, isLive, useHls);
     });
   }
 
   // ブラウザで開くボタン
   if (openBtn) {
-    openBtn.addEventListener('click', async () => {
-      try {
-        await openExternalUrl(watchUrl);
-      } catch (error) {
-        console.error('Error opening URL:', error);
-        window.open(watchUrl, '_blank', 'noopener,noreferrer');
-      }
-    });
+    openBtn.addEventListener('click', openInBrowser);
   }
 
   // 弾幕トグルボタン
@@ -235,7 +365,7 @@ function setupSplitPlayerEventHandlers(videos) {
     const iframe = panel.querySelector('.split-player-iframe');
     const statusEl = panel.querySelector('.player-panel-status');
     const reloadBtn = panel.querySelector('.split-reload-btn');
-    const openBtn = panel.querySelector('.split-open-btn');
+    const openBtns = panel.querySelectorAll('.split-open-btn');
     const video = videos[index];
 
     iframe?.addEventListener('load', () => {
@@ -252,14 +382,16 @@ function setupSplitPlayerEventHandlers(videos) {
       if (statusEl) statusEl.textContent = 'プレイヤーを再読込中...';
     });
 
-    openBtn?.addEventListener('click', async () => {
-      const watchUrl = getYouTubeWatchUrl(video.videoId);
-      try {
-        await openExternalUrl(watchUrl);
-      } catch (error) {
-        console.error('Error opening URL:', error);
-        window.open(watchUrl, '_blank', 'noopener,noreferrer');
-      }
+    openBtns.forEach((openBtn) => {
+      openBtn.addEventListener('click', async () => {
+        const watchUrl = getYouTubeWatchUrl(video.videoId);
+        try {
+          await openExternalUrl(watchUrl);
+        } catch (error) {
+          console.error('Error opening URL:', error);
+          window.open(watchUrl, '_blank', 'noopener,noreferrer');
+        }
+      });
     });
   });
 
@@ -287,7 +419,7 @@ function setupDanmakuToggle(toggleBtn) {
   toggleBtn.addEventListener('click', () => {
     isDanmakuEnabled = !isDanmakuEnabled;
     toggleBtn.classList.toggle('active', isDanmakuEnabled);
-    toggleBtn.innerHTML = `<span aria-hidden="true">💬</span> ${isDanmakuEnabled ? '弾幕ON' : '弾幕OFF'}`;
+    toggleBtn.textContent = isDanmakuEnabled ? '弾幕 ON' : '弾幕 OFF';
     toggleBtn.setAttribute('aria-pressed', String(isDanmakuEnabled));
     danmakuContainer.style.display = isDanmakuEnabled ? 'block' : 'none';
   });
@@ -332,6 +464,13 @@ const DANMAKU_MIN_INTERVAL_MS = 80;
 const DANMAKU_MAX_TEXT_LENGTH = 120;
 let lastDanmakuAt = 0;
 
+// 高流量の配信では毎秒何十通も流れる。1 通ごとに MediaQueryList を
+// 作り直さないよう、一度だけ作って使い回す
+const reducedMotionQuery =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : null;
+
 /**
  * 弾幕メッセージを処理して表示
  * 高流量配信でDOMが飽和しないよう、同時表示数と流入間隔を制限する
@@ -343,7 +482,7 @@ function handleDanmakuMessage(data, container) {
   if (container.style.display === 'none') return;
 
   // 動きの抑制設定時は流れるコメントを出さない
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (reducedMotionQuery?.matches) return;
 
   const now = Date.now();
   if (now - lastDanmakuAt < DANMAKU_MIN_INTERVAL_MS) return;

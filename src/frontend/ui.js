@@ -85,8 +85,12 @@ export function initializeSidebar() {
       item.className = "menu-item";
       item.setAttribute("type", "button");
       item.dataset.channelName = channel.name;
-      item.innerHTML = `<span class="icon" aria-hidden="true">📌</span><span>${escapeHTML(channel.name)}</span>`;
+      item.innerHTML = `<span>${escapeHTML(channel.name)}</span>`;
       item.addEventListener("click", () => {
+        if (state.currentSelectedChannel === channel.name) {
+          closeSidebar();
+          return;
+        }
         setSelectedChannel(channel.name);
         closeSidebar();
         renderCurrentGrid();
@@ -142,11 +146,13 @@ export function initializeGameDropdown() {
 
   const commit = (item) => {
     const gameValue = item.getAttribute("data-value") || "";
+    const isUnchanged = state.currentSelectedGame === gameValue;
     items.forEach((el) => el.setAttribute("aria-selected", String(el === item)));
-    state.setSelectedGame(gameValue);
-    updateGameSelectedText(item.textContent);
     closeList();
     gameSelectedText.focus();
+    if (isUnchanged) return;
+    state.setSelectedGame(gameValue);
+    updateGameSelectedText(item.textContent);
     renderCurrentGrid();
   };
 
@@ -275,9 +281,17 @@ export function initializeGlobalHandlers() {
   });
 
   // Escapeでサイドバーを閉じる（オーバーレイクリックのキーボード代替）
+  // ドロップダウンが開いている場合はそちらも閉じる
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && isSidebarOpen()) {
       closeSidebar();
+    }
+    if (e.key === "Escape") {
+      try {
+        closeAllDropdowns();
+      } catch (error) {
+        logError(MODULE, "Error closing dropdowns on Escape", error);
+      }
     }
   });
 
@@ -377,7 +391,7 @@ function trapModalKeydown(e) {
     modal.querySelectorAll(
       'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
     ),
-  ).filter((el) => el.offsetParent !== null);
+  ).filter((el) => el.getClientRects().length > 0);
   if (focusables.length === 0) return;
 
   const first = focusables[0];
@@ -517,6 +531,22 @@ export function initializeBackButton() {
     });
   }
 
+  // Esc でプレイヤーを閉じる (フォーカスが iframe 外にある場合)
+  document.addEventListener("keydown", (e) => {
+    try {
+      if (e.key !== "Escape" && e.key !== "Esc") return;
+      if (e.defaultPrevented) return;
+      const modal = getDOM("settingsModal");
+      if (modal && !modal.classList.contains("hidden")) return;
+      const playerView = getDOM("playerView");
+      if (!playerView || playerView.classList.contains("hidden")) return;
+      e.preventDefault();
+      closePlayer();
+    } catch (error) {
+      logError(MODULE, "Error handling player Escape", error);
+    }
+  });
+
   log(MODULE, "Back button initialized");
 }
 
@@ -530,6 +560,7 @@ export function initializeBackButton() {
  * @param {string} value - チャンネル値
  */
 export function setSelectedChannel(value) {
+  if (state.currentSelectedChannel === value) return;
   state.setSelectedChannel(value);
   const label = value === CHANNELS.ALL.value ? CHANNELS.ALL.label : value;
   updateSidebarSelectedChannel(label);
@@ -682,6 +713,10 @@ export function initializeUI() {
 
     // 初期状態を設定
     setSelectedChannel(CHANNELS.ALL.value);
+    // setMode は現在値と同じだと早期 return するため、初期表示では
+    // roving tabindex が未設定のまま両タブが Tab 順に入ってしまう。
+    // タブの ARIA 状態だけは明示的に同期させる。
+    setTabActive(state.currentMode);
     setMode(VIDEO_MODES.OFFICIAL);
 
     log(MODULE, "UI initialized successfully");

@@ -257,7 +257,16 @@ export function closeAllDropdowns() {
   // aria-expanded属性を更新
   document.querySelectorAll('[aria-haspopup="listbox"]').forEach((el) => {
     el.setAttribute("aria-expanded", "false");
+    // 外側クリックで閉じた際に残る stale な選択追従を消す
+    try {
+      el.removeAttribute("aria-activedescendant");
+    } catch {
+      /* no-op: 属性削除の失敗は無視する */
+    }
   });
+  document
+    .querySelectorAll(".dropdown-item.focused")
+    .forEach((el) => removeClass(el, "focused"));
 }
 
 /**
@@ -364,6 +373,7 @@ export function updatePlayerVideoTitle(title) {
  * @param {string} html - 設定するHTML
  */
 export function setPlayerHTML(html) {
+  runPlaybackCleanup();
   const playerContainer = getDOM("playerContainer");
   if (playerContainer) {
     playerContainer.innerHTML = html;
@@ -373,7 +383,25 @@ export function setPlayerHTML(html) {
 /**
  * プレイヤーコンテナをクリア
  */
+// プレイヤー DOM を捨てる前に呼ぶ後始末。player.js が hls.js の破棄を登録する。
+// dom.js から player.js を import すると循環するため、登録式にしている。
+let playbackCleanup = null;
+
+export function setPlaybackCleanup(cleanup) {
+  playbackCleanup = typeof cleanup === "function" ? cleanup : null;
+}
+
+function runPlaybackCleanup() {
+  if (!playbackCleanup) return;
+  try {
+    playbackCleanup();
+  } catch (error) {
+    console.warn("Playback cleanup failed", error);
+  }
+}
+
 function clearPlayerContainer() {
+  runPlaybackCleanup();
   const playerContainer = getDOM("playerContainer");
   if (playerContainer) {
     playerContainer.innerHTML = "";
@@ -467,6 +495,7 @@ export default {
   hidePlayer,
   updatePlayerVideoTitle,
   setPlayerHTML,
+  setPlaybackCleanup,
   showDescriptionContainer,
   hideDescriptionContainer,
   showToast,

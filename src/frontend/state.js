@@ -17,6 +17,9 @@ const state = {
     last_updated: null,
     last_error: null,
   },
+  // appData が実際に差し替わるたびに増える。描画側はこれを見て
+  // 「同じデータでの作り直し」を省く
+  dataVersion: 0,
 
   // Connection State
   activeChatSocket: null,
@@ -63,6 +66,7 @@ const state = {
         last_updated: data.last_updated || null,
         last_error: data.last_error || null,
       };
+      this.dataVersion += 1;
     }
   },
 

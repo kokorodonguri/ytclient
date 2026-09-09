@@ -11,7 +11,7 @@
         script-src 'self';
         connect-src 'self' http: https: ws: wss:;
         frame-src https://www.youtube.com https://*.youtube.com https://www.youtube-nocookie.com https://*.youtube-nocookie.com;
-        media-src 'self' blob:;
+        media-src 'self' blob: https://*.googlevideo.com;
         object-src 'none';
         base-uri 'none';
         form-action 'none';
@@ -54,7 +54,6 @@
                     type="button"
                     aria-current="page"
                 >
-                    <span class="icon" aria-hidden="true">🏠</span>
                     <span>ホーム (すべて表示)</span>
                 </button>
 
@@ -102,7 +101,7 @@
                     aria-selected="true"
                     aria-controls="official-container"
                 >
-                    <span aria-hidden="true">📺</span> メンバー配信
+                    メンバー配信
                 </button>
                 <button
                     id="tab-clips"
@@ -112,7 +111,7 @@
                     aria-selected="false"
                     aria-controls="clips-container"
                 >
-                    <span aria-hidden="true">✂️</span> 切り抜き
+                    切り抜き
                 </button>
             </nav>
 
@@ -124,6 +123,7 @@
                         type="button"
                         aria-haspopup="listbox"
                         aria-expanded="false"
+                        aria-controls="game-options"
                         aria-label="ゲームフィルターを選択"
                     >
                         すべてのゲーム
@@ -209,7 +209,6 @@
                     aria-label="追加検索ワード"
                 />
                 <button id="refresh-btn" type="button">
-                    <span class="icon" aria-hidden="true">🔄</span>
                     <span>最新を読み込む</span>
                 </button>
                 <button
@@ -228,7 +227,7 @@
         <main id="main-content" tabindex="-1">
             <section id="feed-status-panel" class="feed-status-panel">
                 <div class="feed-status-main">
-                    <span id="connection-status" class="status-pill loading">
+                    <span id="connection-status" class="status-pill loading" role="status" aria-live="polite">
                         接続確認中
                     </span>
                     <span
@@ -258,7 +257,7 @@
                 aria-labelledby="tab-official"
             >
                 <!-- 初期ロード中のスケルトン -->
-                <div class="skeleton-grid">
+                <div class="skeleton-grid" aria-hidden="true">
                     <article class="video-card-skeleton">
                         <div class="skeleton-thumbnail"></div>
                         <div class="skeleton-info">
@@ -298,7 +297,7 @@
                 aria-labelledby="tab-clips"
             >
                 <!-- 初期ロード中のスケルトン -->
-                <div class="skeleton-grid">
+                <div class="skeleton-grid" aria-hidden="true">
                     <article class="video-card-skeleton">
                         <div class="skeleton-thumbnail"></div>
                         <div class="skeleton-info">
@@ -446,6 +445,8 @@
         </div>
 
         <!-- JavaScript modules -->
+        <!-- 配信の HLS 再生に使う。CSP により外部 CDN は読めないので同梱している -->
+        <script src="vendor/hls.light.min.js"></script>
         <script type="module" src="renderer.js"></script>
     </body>
 </html>

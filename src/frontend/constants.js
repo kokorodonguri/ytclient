@@ -59,6 +59,7 @@ export const API_CONFIG = {
     HEALTH: '/api/v1/health',
     FEED: '/api/v1/feed',
     COMMENTS: (videoId) => `/api/v1/videos/${encodeURIComponent(videoId)}/comments`,
+    STREAM: (videoId) => `/api/v1/videos/${encodeURIComponent(videoId)}/stream`,
     LIVE_CHAT: (videoId) => `/api/v1/ws/live-chat/${encodeURIComponent(videoId)}`,
   },
 };
@@ -210,8 +211,8 @@ export const BUTTON_LABELS = {
   BACK: '一覧に戻る',
   MORE: 'もっと見る',
   LESS: '一部を表示',
-  DANMAKU_ON: '💬 弾幕ON',
-  DANMAKU_OFF: '💬 弾幕OFF',
+  DANMAKU_ON: '弾幕 ON',
+  DANMAKU_OFF: '弾幕 OFF',
   RELOAD_PLAYER: '再読込',
   OPEN_BROWSER: 'ブラウザで開く',
   CLOSE: '閉じる',

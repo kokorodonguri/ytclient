@@ -25,47 +25,46 @@ const MODULE = "GRID";
  * @param {Object} item - ビデオアイテム
  * @returns {string} HTML
  */
-export function buildVideoCardHTML(item) {
+export function buildVideoCardHTML(item, currentUnixSeconds) {
   if (!item || typeof item !== "object") {
     return "";
   }
 
   try {
-    // バッジHTMLを生成
+    // サムネイル上に載せるのは経過時間だけに絞る。
+    // 種別は本文側の .card-status に 1 つだけ出す
     let badgesHTML = "";
-    let typeBadgeHTML = "";
+    let statusClass = "";
+    let statusLabel = "";
 
     if (item.is_live) {
-      badgesHTML += '<span class="badge live-badge">🔴 LIVE</span>';
-      typeBadgeHTML = '<span class="badge type-badge live-type-badge">LIVE中</span>';
+      statusClass = "is-live";
+      statusLabel = "LIVE";
     } else if (item.is_upcoming) {
-      badgesHTML += '<span class="badge upcoming-badge">📅 予定</span>';
-      typeBadgeHTML = '<span class="badge type-badge upcoming-type-badge">配信予定</span>';
+      statusClass = "is-upcoming";
+      statusLabel = "配信予定";
     } else if (item.is_live_archive) {
-      typeBadgeHTML = '<span class="badge type-badge archive-type-badge">配信アーカイブ</span>';
+      statusClass = "is-archive";
+      statusLabel = "アーカイブ";
+    } else {
+      statusClass = "is-video";
+      statusLabel = "動画";
     }
 
     if (!item.is_live && !item.is_upcoming && item.timestamp) {
-      const timeStr = formatRelativeTime(item.timestamp);
+      const timeStr = formatRelativeTime(item.timestamp, currentUnixSeconds);
       if (timeStr) {
         badgesHTML += `<span class="badge time-badge">${timeStr}</span>`;
       }
     }
 
-    if (!typeBadgeHTML) {
-      typeBadgeHTML = '<span class="badge type-badge video-type-badge">動画</span>';
-    }
-
-    // データをエスケープ
+    // データをエスケープ（HTMLエスケープ結果は属性・本文双方で安全に共用可能）
     const videoId = escapeAttribute(item.video_id || "");
-    const title = escapeAttribute(item.title || "");
-    const titleText = escapeHTML(item.title || "");
-    const uploaderText = escapeHTML(item.uploader || "");
+    const title = escapeHTML(item.title || "");
+    const uploader = escapeHTML(item.uploader || "");
     const thumbnail = escapeAttribute(item.thumbnail || "");
     const isLive = item.is_live ? "true" : "false";
-    const ariaLabel = escapeAttribute(
-      `ビデオ: ${item.title || ""} - ${item.uploader || ""}`,
-    );
+    const ariaLabel = `ビデオ: ${title} - ${uploader}`;
 
     return `
       <button
@@ -83,12 +82,12 @@ export function buildVideoCardHTML(item) {
             loading="lazy"
             alt=""
           />
-          <div class="type-badge-container">${typeBadgeHTML}</div>
           <div class="badges-container">${badgesHTML}</div>
         </div>
         <div class="video-info">
-          <span class="title">${titleText}</span>
-          <span class="channel-title">${uploaderText}</span>
+          <span class="card-status ${statusClass}">${statusLabel}</span>
+          <span class="title">${title}</span>
+          <span class="channel-title">${uploader}</span>
         </div>
       </button>
     `;
@@ -114,34 +113,58 @@ export function filterVideos(videos, filters = {}) {
     return [];
   }
 
-  let filtered = [...videos];
+  const hasChannel = Boolean(filters.channel && filters.channel !== "ALL");
+  const channelFilter = hasChannel ? filters.channel : null;
 
-  // チャンネルフィルタ
-  if (filters.channel && filters.channel !== "ALL") {
-    filtered = filtered.filter((v) =>
-      (v.uploader || "").includes(filters.channel),
-    );
-  }
-
-  // ゲームと自由キーワードフィルタ
   const searchTerms = [];
   if (filters.game) {
     searchTerms.push(filters.game.toLowerCase());
   }
   if (filters.searchWords) {
-    searchTerms.push(
-      ...filters.searchWords
-        .split(/\s+/)
-        .map((w) => w.toLowerCase())
-        .filter((w) => w.length > 0),
-    );
+    const words = filters.searchWords.split(/\s+/);
+    for (let i = 0; i < words.length; i += 1) {
+      const w = words[i].toLowerCase();
+      if (w.length > 0) searchTerms.push(w);
+    }
   }
 
-  if (searchTerms.length > 0) {
-    filtered = filtered.filter((v) => {
-      const text = `${v.title || ""} ${v.uploader || ""}`.toLowerCase();
-      return searchTerms.every((term) => text.includes(term));
-    });
+  const hasSearch = searchTerms.length > 0;
+
+  // フィルタ条件が何もない場合は配列コピーを避ける
+  if (!hasChannel && !hasSearch) {
+    return videos;
+  }
+
+  // 単一走査 (1パス) でフィルタリングし、中間配列の多重生成を抑制
+  const filtered = [];
+  const searchTermsCount = searchTerms.length;
+
+  for (let i = 0; i < videos.length; i += 1) {
+    const v = videos[i];
+    if (!v) continue;
+
+    if (hasChannel && !(v.uploader || "").includes(channelFilter)) {
+      continue;
+    }
+
+    if (hasSearch) {
+      // 検索インデックス（小文字化されたタイトルと投稿者名）を遅延生成してキャッシュ
+      // ユーザーの入力毎の大量の文字列結合・toLowerCase()・GC 負荷をゼロにする
+      const searchIndex =
+        v._searchIndex ||
+        (v._searchIndex = `${v.title || ""} ${v.uploader || ""}`.toLowerCase());
+
+      let matches = true;
+      for (let j = 0; j < searchTermsCount; j += 1) {
+        if (!searchIndex.includes(searchTerms[j])) {
+          matches = false;
+          break;
+        }
+      }
+      if (!matches) continue;
+    }
+
+    filtered.push(v);
   }
 
   log(MODULE, `Filtered videos: ${filtered.length} / ${videos.length}`);
@@ -160,6 +183,16 @@ export function sortVideos(videos) {
   }
 
   // Sort only by available timestamps; uploader identity must not affect order.
+  // 既に降順なら並べ替えも複製もしない (サーバは新しい順で返す)。
+  let sortedAlready = true;
+  for (let i = 1; i < videos.length; i += 1) {
+    if ((Number(videos[i - 1].timestamp) || 0) < (Number(videos[i].timestamp) || 0)) {
+      sortedAlready = false;
+      break;
+    }
+  }
+  if (sortedAlready) return videos;
+
   return [...videos].sort((a, b) => {
     const aTimestamp = Number(a.timestamp) || 0;
     const bTimestamp = Number(b.timestamp) || 0;
@@ -219,6 +252,7 @@ export function renderGrid(state, dom) {
 
     // 構築中かつ結果がない場合
     if (state.appData.is_building && sorted.length === 0) {
+      cancelPendingRender();
       renderBuildingState(container);
       return;
     }
@@ -227,6 +261,7 @@ export function renderGrid(state, dom) {
     if (sorted.length > 0) {
       renderVideos(container, sorted, state.appData.is_building);
     } else {
+      cancelPendingRender();
       renderEmptyState(container);
     }
 
@@ -317,18 +352,120 @@ function formatLastUpdated(rawValue) {
 }
 
 /**
+ * ========================================
+ * 段階描画
+ * ======================================== */
+
+// 一覧は 4000 件規模になる。全件を一度に DOM 化すると 33,000 ノード /
+// HTML 3.4MB になり、1 回の描画で 400〜700ms メインスレッドが止まる
+// (実測: build 28ms + innerHTML 110ms + layout 566ms)。
+// 画面に入る分だけ描き、番兵が見えたら続きを足す。
+const RENDER_CHUNK_SIZE = 60;
+
+let pendingRender = null;
+
+/**
+ * 進行中の段階描画を止める。再描画・画面切り替えの前に必ず呼ぶ
+ */
+function cancelPendingRender() {
+  if (!pendingRender) return;
+  pendingRender.observer?.disconnect();
+  window.removeEventListener("scroll", onScrollMaybeAppend);
+  pendingRender = null;
+}
+
+// IntersectionObserver は描画が止まっている間 (ウィンドウが背面にある、
+// 一部の埋め込み環境など) コールバックが呼ばれない。スクロールでも
+// 到達を見て、取りこぼしを防ぐ
+const SCROLL_CHECK_INTERVAL_MS = 100;
+let lastScrollCheckAt = 0;
+
+function onScrollMaybeAppend() {
+  if (!pendingRender) return;
+  // requestAnimationFrame は描画が止まっている間 呼ばれないため、
+  // 時刻での間引きにする (計測するのは番兵 1 要素の矩形だけ)
+  const now = Date.now();
+  if (now - lastScrollCheckAt < SCROLL_CHECK_INTERVAL_MS) return;
+  lastScrollCheckAt = now;
+
+  const rect = pendingRender.sentinel.getBoundingClientRect();
+  if (rect.top <= window.innerHeight + 800) appendChunk();
+}
+
+function appendChunk() {
+  if (!pendingRender) return;
+
+  const { videos, sentinel } = pendingRender;
+  const start = pendingRender.offset;
+  const end = Math.min(start + RENDER_CHUNK_SIZE, videos.length);
+  if (start >= end) {
+    cancelPendingRender();
+    sentinel?.remove();
+    return;
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  let html = "";
+  for (let i = start; i < end; i += 1) {
+    html += buildVideoCardHTML(videos[i], nowSec);
+  }
+  // 番兵の手前に差し込む。innerHTML の作り直しではないので
+  // 既存カードのノードもスクロール位置も維持される
+  sentinel.insertAdjacentHTML("beforebegin", html);
+  pendingRender.offset = end;
+
+  if (end >= videos.length) {
+    cancelPendingRender();
+    sentinel.remove();
+  }
+}
+
+/**
  * ビデオを描画
  * @param {Element} container - コンテナ要素
  * @param {Array} videos - ビデオリスト
  * @param {boolean} isBuilding - 構築中フラグ
  */
 function renderVideos(container, videos, isBuilding = false) {
+  cancelPendingRender();
+
   // 再描画でフォーカス中のカードが破棄されるため、復元用にIDを保持
   const focusedVideoId =
     document.activeElement?.closest?.(".video-card")?.dataset.videoId || null;
 
-  const htmlContent = videos.map((item) => buildVideoCardHTML(item)).join("");
-  container.innerHTML = htmlContent;
+  const firstCount = Math.min(RENDER_CHUNK_SIZE, videos.length);
+  const nowSec = Math.floor(Date.now() / 1000);
+  let html = "";
+  for (let i = 0; i < firstCount; i += 1) {
+    html += buildVideoCardHTML(videos[i], nowSec);
+  }
+  container.innerHTML = html;
+
+  if (videos.length > firstCount) {
+    const sentinel = document.createElement("div");
+    sentinel.className = "grid-sentinel";
+    sentinel.setAttribute("aria-hidden", "true");
+    container.appendChild(sentinel);
+
+    pendingRender = { container, videos, offset: firstCount, sentinel, observer: null };
+
+    if (typeof IntersectionObserver === "function") {
+      // 画面下端の手前で先読みする。rootMargin を広めに取り、
+      // スクロールしてから描き始めることによる空白を避ける
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) appendChunk();
+        },
+        { rootMargin: "800px 0px" },
+      );
+      observer.observe(sentinel);
+      pendingRender.observer = observer;
+    }
+
+    window.addEventListener("scroll", onScrollMaybeAppend, { passive: true });
+    // 初回描画で画面が埋まらない場合に備えて 1 度だけ判定する
+    onScrollMaybeAppend();
+  }
 
   if (focusedVideoId) {
     container

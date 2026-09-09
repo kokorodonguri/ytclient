@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import hashlib
 import hmac
 import json
@@ -44,6 +45,10 @@ ALLOWED_ORIGINS = [
 # 高コスト経路の保護
 COMMENTS_CONCURRENCY = max(1, int(os.environ.get("VSPO_COMMENTS_CONCURRENCY", "4")))
 COMMENTS_CACHE_TTL_SECONDS = max(0, int(os.environ.get("VSPO_COMMENTS_CACHE_TTL", "300")))
+STREAM_CONCURRENCY = max(1, int(os.environ.get("VSPO_STREAM_CONCURRENCY", "4")))
+# 解決した HLS マニフェストは数時間で失効する。短命キャッシュに留める。
+STREAM_CACHE_TTL_SECONDS = max(0, int(os.environ.get("VSPO_STREAM_CACHE_TTL", "60")))
+STREAM_CACHE_MAX_ENTRIES = 64
 COMMENTS_CACHE_MAX_ENTRIES = 256
 MAX_LIVE_CHAT_CONNECTIONS = max(1, int(os.environ.get("VSPO_MAX_LIVE_CHAT", "16")))
 RATE_LIMIT_REQUESTS = max(1, int(os.environ.get("VSPO_RATE_LIMIT_REQUESTS", "30")))
@@ -165,6 +170,7 @@ class SlidingWindowRateLimiter:
 
 comments_rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
 comments_semaphore = asyncio.Semaphore(COMMENTS_CONCURRENCY)
+stream_semaphore = asyncio.Semaphore(STREAM_CONCURRENCY)
 live_chat_semaphore = asyncio.Semaphore(MAX_LIVE_CHAT_CONNECTIONS)
 
 _comments_cache: Dict[str, Any] = {}
@@ -371,6 +377,41 @@ FEED_DATA = {
 }
 feed_lock = threading.Lock()
 
+# フィードの応答は数千件・1.5MB 前後になる。リクエストごとに
+# 「辞書のコピー → ETag 用の json.dumps → 応答用のシリアライズ」を
+# やり直すと、1 リクエストあたり 100ms 近い CPU を無条件に消費する
+# (実測: ETag 用 dumps+sha256 23ms / jsonable_encoder 63ms / dumps 16ms)。
+# 内容が変わるのは収集ワーカーの 1 周期ごとなので、書き込み側で
+# 生バイト列・事前 gzip 圧縮列・ETag を 1 回だけ作り、読み出し側はそれを配るだけにする。
+_feed_response: Dict[str, Any] = {"body": b"", "body_gzip": b"", "etag": ""}
+
+
+def _rebuild_feed_response_locked() -> None:
+    """feed_lock を保持したまま呼ぶこと。"""
+    payload = {
+        "status": "success",
+        "data": {
+            "official": FEED_DATA["official"],
+            "clips": FEED_DATA["clips"],
+            "is_building": FEED_DATA["is_building"],
+            "last_updated": FEED_DATA["last_updated"],
+            "last_error": FEED_DATA["last_error"],
+        },
+    }
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    _feed_response["body"] = body
+    _feed_response["body_gzip"] = gzip.compress(body, compresslevel=6)
+    _feed_response["etag"] = '"{}"'.format(hashlib.sha256(body).hexdigest())
+
+
+def _get_feed_response(accept_gzip: bool = True) -> Tuple[bytes, str, bool]:
+    with feed_lock:
+        if not _feed_response["etag"]:
+            _rebuild_feed_response_locked()
+        if accept_gzip and _feed_response["body_gzip"]:
+            return _feed_response["body_gzip"], _feed_response["etag"], True
+        return _feed_response["body"], _feed_response["etag"], False
+
 
 def _snapshot_feed_data() -> Dict[str, Any]:
     with feed_lock:
@@ -386,6 +427,7 @@ def _snapshot_feed_data() -> Dict[str, Any]:
 def _set_feed_building(is_building: bool) -> None:
     with feed_lock:
         FEED_DATA["is_building"] = is_building
+        _rebuild_feed_response_locked()
 
 
 def _mark_feed_error(error: Exception) -> None:
@@ -394,6 +436,7 @@ def _mark_feed_error(error: Exception) -> None:
     with feed_lock:
         FEED_DATA["is_building"] = False
         FEED_DATA["last_error"] = type(error).__name__
+        _rebuild_feed_response_locked()
 
 
 def _replace_feed_data(
@@ -407,6 +450,7 @@ def _replace_feed_data(
         FEED_DATA["is_building"] = is_building
         FEED_DATA["last_updated"] = datetime.now().isoformat()
         FEED_DATA["last_error"] = None
+        _rebuild_feed_response_locked()
 
 
 def _extract_entries(ydl: yt_dlp.YoutubeDL, url: str) -> Dict[str, Any]:
@@ -652,17 +696,30 @@ def read_root():
 
 @app.get("/api/v1/feed", dependencies=[Depends(require_api_key)])
 @app.get("/api/feed", dependencies=[Depends(require_api_key)], include_in_schema=False)
-def get_feed(request: Request, response: Response):
-    payload = {"status": "success", "data": _snapshot_feed_data()}
-    etag = '"{}"'.format(
-        hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()
-    )
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers={"ETag": etag})
-    response.headers["ETag"] = etag
-    return payload
+def get_feed(request: Request):
+    """事前生成済みのバイト列をそのまま返す。
+
+    - 辞書返却時の jsonable_encoder + dumps による二重シリアライズを回避。
+    - クライアントが gzip を受け入れる場合は事前圧縮列を返し、転送量を約80%削減。
+    """
+    accept_encoding = request.headers.get("accept-encoding", "")
+    accept_gzip = "gzip" in accept_encoding.lower()
+
+    body, etag, is_gzipped = _get_feed_response(accept_gzip=accept_gzip)
+    headers = {"ETag": etag, "Cache-Control": "no-cache", "Vary": "Accept-Encoding"}
+    if is_gzipped:
+        headers["Content-Encoding"] = "gzip"
+
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match:
+        client_etags = [
+            tag.strip().removeprefix("W/").strip('"')
+            for tag in if_none_match.split(",")
+        ]
+        if etag.strip('"') in client_etags:
+            return Response(status_code=304, headers=headers)
+
+    return Response(content=body, media_type="application/json", headers=headers)
 
 
 def _get_video_comments(video_id: str, limit: int) -> Dict[str, Any]:
@@ -724,6 +781,217 @@ async def _get_video_comments_guarded(video_id: str, limit: int) -> Dict[str, An
         comments_semaphore.release()
 
 
+_stream_cache: Dict[str, Dict[str, Any]] = {}
+_stream_cache_lock = threading.Lock()
+
+
+def _stream_cache_get(video_id: str) -> Optional[Dict[str, Any]]:
+    if STREAM_CACHE_TTL_SECONDS <= 0:
+        return None
+    with _stream_cache_lock:
+        entry = _stream_cache.get(video_id)
+        if not entry:
+            return None
+        if time.monotonic() - entry["stored_at"] > STREAM_CACHE_TTL_SECONDS:
+            _stream_cache.pop(video_id, None)
+            return None
+        return entry["payload"]
+
+
+def _stream_cache_put(video_id: str, payload: Dict[str, Any]) -> None:
+    if STREAM_CACHE_TTL_SECONDS <= 0:
+        return
+    with _stream_cache_lock:
+        if len(_stream_cache) >= STREAM_CACHE_MAX_ENTRIES:
+            oldest = min(_stream_cache, key=lambda key: _stream_cache[key]["stored_at"])
+            _stream_cache.pop(oldest, None)
+        _stream_cache[video_id] = {"stored_at": time.monotonic(), "payload": payload}
+
+
+def _pick_hls_source(info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """配信中の HLS を選ぶ。可能ならマスタープレイリストを返して ABR に任せる。"""
+    hls_formats = [
+        fmt
+        for fmt in (info.get("formats") or [])
+        if "m3u8" in (fmt.get("protocol") or "") and fmt.get("url")
+    ]
+    if not hls_formats:
+        return None
+
+    best = max(hls_formats, key=lambda fmt: fmt.get("height") or 0)
+
+    # マスタープレイリストがあればそれを使う (画質は再生側が回線に応じて選ぶ)
+    master = info.get("manifest_url") or best.get("manifest_url")
+    if master:
+        return {"url": master, "height": None, "is_master": True}
+
+    return {"url": best["url"], "height": best.get("height"), "is_master": False}
+
+
+# アプリ内再生では 1080p を上限にする (帯域とデコード負荷が見合わない)
+MAX_STREAM_VIDEO_HEIGHT = 1080
+
+
+def _http_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        fmt
+        for fmt in (info.get("formats") or [])
+        if fmt.get("url") and (fmt.get("protocol") or "") == "https"
+    ]
+
+
+def _pick_video_only(formats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    candidates = [
+        fmt
+        for fmt in formats
+        if fmt.get("acodec") == "none"
+        and fmt.get("vcodec") not in (None, "none")
+        and fmt.get("ext") == "mp4"
+        and (fmt.get("height") or 0) <= MAX_STREAM_VIDEO_HEIGHT
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda f: ((f.get("height") or 0), (f.get("tbr") or 0)))
+
+
+def _pick_audio_only(formats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    candidates = [
+        fmt
+        for fmt in formats
+        if fmt.get("vcodec") == "none"
+        and fmt.get("acodec") not in (None, "none")
+        and fmt.get("ext") == "m4a"
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda f: (f.get("abr") or 0))
+
+
+def _pick_progressive(formats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    candidates = [
+        fmt
+        for fmt in formats
+        if fmt.get("acodec") not in (None, "none")
+        and fmt.get("vcodec") not in (None, "none")
+        and fmt.get("ext") == "mp4"
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda f: (f.get("height") or 0))
+
+
+def _get_video_stream(video_id: str) -> Dict[str, Any]:
+    validated_video_id = validate_video_id(video_id)
+
+    cached = _stream_cache_get(validated_video_id)
+    if cached is not None:
+        return cached
+
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        # 開始前の配信は「フォーマットが無い」だけで上流障害ではない。
+        # 例外にすると 502 になり、クライアントが区別できなくなる
+        "ignore_no_formats_error": True,
+        "socket_timeout": YT_SOCKET_TIMEOUT_SECONDS,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = (
+                ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={validated_video_id}",
+                    download=False,
+                )
+                or {}
+            )
+    except Exception as error:
+        logger.warning("Failed to resolve stream for %s: %s", validated_video_id, error)
+        raise HTTPException(status_code=502, detail="Failed to resolve stream")
+
+    if not info:
+        raise HTTPException(status_code=502, detail="Failed to resolve stream")
+
+    # 開始前の配信は待機所しか無い。再生させず、その旨を伝える
+    if info.get("live_status") == "is_upcoming" or info.get("is_upcoming"):
+        raise HTTPException(
+            status_code=409,
+            detail="Stream has not started yet",
+            headers={"X-Stream-State": "upcoming"},
+        )
+
+    if info.get("is_live"):
+        source = _pick_hls_source(info)
+        if not source:
+            raise HTTPException(status_code=404, detail="No playable stream found")
+        data = {
+            "video_id": validated_video_id,
+            "is_live": True,
+            "protocol": "hls",
+            "url": source["url"],
+            "audio_url": None,
+            "progressive_url": None,
+            "height": source["height"],
+            "title": _safe_str(info.get("title")),
+        }
+    else:
+        # YouTube は結合済みの高画質を出さないため、1080p を出すには
+        # 映像と音声を別々に取って再生側で同期させるしかない
+        formats = _http_formats(info)
+        video_fmt = _pick_video_only(formats)
+        audio_fmt = _pick_audio_only(formats)
+        progressive = _pick_progressive(formats)
+
+        if video_fmt and audio_fmt:
+            data = {
+                "video_id": validated_video_id,
+                "is_live": False,
+                "protocol": "split",
+                "url": video_fmt["url"],
+                "audio_url": audio_fmt["url"],
+                "progressive_url": progressive["url"] if progressive else None,
+                "height": video_fmt.get("height"),
+                "title": _safe_str(info.get("title")),
+            }
+        elif progressive:
+            data = {
+                "video_id": validated_video_id,
+                "is_live": False,
+                "protocol": "progressive",
+                "url": progressive["url"],
+                "audio_url": None,
+                "progressive_url": progressive["url"],
+                "height": progressive.get("height"),
+                "title": _safe_str(info.get("title")),
+            }
+        else:
+            raise HTTPException(status_code=404, detail="No playable stream found")
+
+    payload = {
+        "status": "success",
+        "data": data,
+    }
+    _stream_cache_put(validated_video_id, payload)
+    return payload
+
+
+async def _get_video_stream_guarded(video_id: str) -> Dict[str, Any]:
+    if stream_semaphore.locked():
+        raise HTTPException(status_code=503, detail="Server busy, retry later")
+    await stream_semaphore.acquire()
+    try:
+        return await run_in_threadpool(_get_video_stream, video_id)
+    finally:
+        stream_semaphore.release()
+
+
+@app.get(
+    "/api/v1/videos/{video_id}/stream",
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
+)
+async def get_video_stream(video_id: str):
+    return await _get_video_stream_guarded(video_id)
+
+
 @app.get(
     "/api/v1/videos/{video_id}/comments",
     dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
@@ -746,14 +1014,43 @@ async def get_comments(
 ):
     return await _get_video_comments_guarded(video_id, limit)
 
-async def _live_chat_ws(websocket: WebSocket, video_id: str):
-    # accept 前に検証し、未認証・不正IDにはハンドシェイクを成立させない
-    if API_KEY:
-        provided = websocket.query_params.get("api_key") or websocket.headers.get("x-api-key")
-        if not _constant_time_equals(provided, API_KEY):
-            await websocket.close(code=1008)
-            return
+WS_AUTH_TIMEOUT_SECONDS = 5.0
 
+
+async def _authenticate_live_chat(websocket: WebSocket) -> bool:
+    """accept 後の最初のメッセージで API キーを検証する。
+
+    クエリパラメータ経由の認証は使わない。CF-Connecting-IP 付与元の
+    Cloudflare Tunnel を含め、途中の経路がフルURL（クエリ文字列ごと）を
+    アクセスログへ残すことがあり、長命の API キーがそこに平文で残ってしまう。
+    """
+    try:
+        raw = await asyncio.wait_for(
+            websocket.receive_text(), timeout=WS_AUTH_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        await websocket.close(code=1008, reason="Authentication timeout")
+        return False
+    except WebSocketDisconnect:
+        return False
+
+    try:
+        auth_message = json.loads(raw)
+    except ValueError:
+        auth_message = None
+
+    if (
+        not isinstance(auth_message, dict)
+        or auth_message.get("type") != "auth"
+        or not _constant_time_equals(auth_message.get("api_key"), API_KEY)
+    ):
+        await websocket.close(code=1008, reason="Missing or invalid API key")
+        return False
+    return True
+
+
+async def _live_chat_ws(websocket: WebSocket, video_id: str):
+    # 不正な動画IDはハンドシェイクを成立させない
     if not _is_valid_youtube_video_id(video_id):
         await websocket.close(code=1008)
         return
@@ -766,7 +1063,15 @@ async def _live_chat_ws(websocket: WebSocket, video_id: str):
     chat = None
     try:
         await websocket.accept()
-        chat = await run_in_threadpool(pytchat.create, video_id)
+        if API_KEY and not await _authenticate_live_chat(websocket):
+            return
+        # interruptable=False は必須。既定の True だと pytchat が SIGINT
+        # ハンドラを登録しようとするが、signal.signal() はメインスレッドでしか
+        # 呼べないため run_in_threadpool 経由では必ず失敗し、ライブチャットが
+        # 一度も繋がらない（"signal only works in main thread" で毎回 1011 落ち）。
+        chat = await run_in_threadpool(
+            pytchat.create, video_id, interruptable=False
+        )
         while True:
             is_alive = await run_in_threadpool(chat.is_alive)
             if not is_alive:
