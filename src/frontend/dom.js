@@ -76,7 +76,8 @@ export function initDomCache() {
     playerContainer: document.getElementById("player-container"),
     playerVideoTitle: document.getElementById("player-video-title"),
     descriptionContainer: document.getElementById("description-container"),
-    backBtn: document.getElementById("back-btn"),
+    // backBtn は操作列内に動的生成されるため、ここではキャッシュしない
+    // (初期化時点では存在せず、再描画で作り直されるので常に null になる)
 
     // ===== 通知要素 =====
     toastContainer: createToastContainer(),
@@ -341,6 +342,10 @@ export function showPlayer() {
   if (playerView) removeClass(playerView, "hidden");
   if (officialContainer) addClass(officialContainer, "hidden");
   if (clipsContainer) addClass(clipsContainer, "hidden");
+
+  // 再生中は映像に高さを譲る。一覧向けの表示を畳み、余白と横幅上限を緩める
+  // 指示は body のクラス 1 つに集約し、実際の見た目は CSS 側で表現する
+  document.body.classList.add("is-player-open");
 }
 
 /**
@@ -355,6 +360,7 @@ export function hidePlayer(mode) {
 
   if (playerView) addClass(playerView, "hidden");
   if (descriptionContainer) addClass(descriptionContainer, "hidden");
+  document.body.classList.remove("is-player-open");
 
   if (mode === "official" && officialContainer) {
     removeClass(officialContainer, "hidden");

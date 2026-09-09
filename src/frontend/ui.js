@@ -524,10 +524,14 @@ async function saveSettings() {
 export function initializeBackButton() {
   log(MODULE, "Initializing back button...");
 
-  const backBtn = getDOM("backBtn");
-  if (backBtn) {
-    backBtn.addEventListener("click", () => {
-      closePlayer();
+  // 戻るボタンは操作列の中に毎回描き直されるため、常設の #player-container に
+  // 一度だけ委譲する。単一プレイヤーと2画面のどちらの描画でも同じ経路で拾える
+  const playerContainer = getDOM("playerContainer");
+  if (playerContainer) {
+    playerContainer.addEventListener("click", (event) => {
+      if (event.target.closest?.("#back-btn")) {
+        closePlayer();
+      }
     });
   }
 

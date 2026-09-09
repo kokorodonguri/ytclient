@@ -7,6 +7,7 @@ import {
   setPlayerHTML,
   updatePlayerVideoTitle,
   showPlayer,
+  hidePlayer,
   showToast,
   showDescriptionContainer,
   hideDescriptionContainer,
@@ -59,6 +60,11 @@ function destroyActivePlayback() {
         console.warn('Failed to stop embedded player', error);
       }
     });
+
+  // プレイヤー DOM を捨てるときは高さ追従も必ず外す。ここに置けば
+  // setPlayerHTML / clearPlayerContainer のどちらの経路からも確実に走るため、
+  // ui.js と player.js で closePlayer が分かれていても取りこぼさない
+  stopChromeHeightTracking();
 }
 
 setPlaybackCleanup(destroyActivePlayback);
@@ -70,6 +76,21 @@ setPlaybackCleanup(destroyActivePlayback);
 // 再帰的なレイアウト変化は起きない。
 const PLAYER_BOTTOM_GUTTER = 16;
 let chromeResizeHandler = null;
+
+// 戻るボタンは操作列と一緒に描き直されるため、playVideo の時点ではまだ存在しない。
+// 「一覧から開いた直後の1回だけ」フォーカスを移すためのフラグ。
+// 再読込や HLS/埋め込み切替の再描画でフォーカスを奪わないようにする
+let pendingEntryFocus = false;
+
+function focusPlayerEntry() {
+  if (!pendingEntryFocus) return;
+  pendingEntryFocus = false;
+  const active = document.activeElement;
+  // 描画待ちの間にユーザーが別の場所を操作していたら奪わない
+  if (active && active !== document.body && active.id !== 'main-content') return;
+  // 描画途中で閉じられていればボタン自体が無いので、ここは自然に何もしない
+  document.getElementById('back-btn')?.focus();
+}
 
 function syncPlayerChromeHeight() {
   const wrap = document.querySelector('.player-main > .player-embed-wrap');
@@ -144,6 +165,9 @@ export async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
       useHls,
     });
 
+    // 操作列が描画され終わったので、開いた直後なら戻るボタンへフォーカスを移す
+    focusPlayerEntry();
+
     // ライブ配信の場合、弾幕WebSocketを接続
     if (isLive) {
       setupLiveChat(videoId);
@@ -165,12 +189,16 @@ export async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
 function generatePlayerHTML({ embedUrl, isLive, title, useHls }) {
   const liveActions = isLive
     ? `
-            <button id="toggle-danmaku-btn" class="player-secondary-btn active" type="button" aria-pressed="true">弾幕 ON</button>`
+            <button id="toggle-danmaku-btn" class="player-secondary-btn active" type="button" aria-pressed="true">
+              <span class="btn-icon" aria-hidden="true">💬</span><span class="btn-label">弾幕 ON</span>
+            </button>`
     : '';
 
   const switchModeBtn = isLive
     ? `
-            <button id="switch-player-mode-btn" class="player-secondary-btn" type="button">${useHls ? '埋め込みに切替' : 'HLSに切替'}</button>`
+            <button id="switch-player-mode-btn" class="player-secondary-btn" type="button">
+              <span class="btn-icon" aria-hidden="true">⇄</span><span class="btn-label">${useHls ? '埋め込みに切替' : 'HLSに切替'}</span>
+            </button>`
     : '';
 
   // 弾幕は流れるコメントの視覚演出であり、ATには読ませない
@@ -204,11 +232,20 @@ function generatePlayerHTML({ embedUrl, isLive, title, useHls }) {
     <div class="player-layout">
       <div class="player-main">
         <div class="player-status-bar">
+          <button id="back-btn" class="back-button" type="button">
+            <span class="btn-icon" aria-hidden="true">←</span><span class="btn-label">一覧に戻る</span>
+          </button>
           <span class="player-panel-status" role="status" aria-live="polite">${statusLabel}</span>
           <div class="player-fallback-actions">${liveActions}${switchModeBtn}
-            <button id="add-split-btn" class="player-secondary-btn" type="button">2画面に追加</button>
-            <button id="reload-player-btn" class="player-secondary-btn" type="button">再読込</button>
-            <button id="open-in-browser-btn" class="player-fallback-open-btn" type="button">ブラウザで開く</button>
+            <button id="add-split-btn" class="player-secondary-btn" type="button">
+              <span class="btn-icon" aria-hidden="true">⊞</span><span class="btn-label">2画面に追加</span>
+            </button>
+            <button id="reload-player-btn" class="player-secondary-btn" type="button">
+              <span class="btn-icon" aria-hidden="true">↻</span><span class="btn-label">再読込</span>
+            </button>
+            <button id="open-in-browser-btn" class="player-fallback-open-btn" type="button">
+              <span class="btn-icon" aria-hidden="true">↗</span><span class="btn-label">ブラウザで開く</span>
+            </button>
           </div>
         </div>
         <div class="player-embed-wrap">
@@ -256,7 +293,12 @@ function generateSplitPlayerHTML(primaryVideo, secondaryVideo) {
 
   return `
     <div class="split-player-toolbar">
-      <button id="exit-split-btn" class="player-secondary-btn" type="button">1画面に戻す</button>
+      <button id="back-btn" class="back-button" type="button">
+        <span class="btn-icon" aria-hidden="true">←</span><span class="btn-label">一覧に戻る</span>
+      </button>
+      <button id="exit-split-btn" class="player-secondary-btn" type="button">
+        <span class="btn-icon" aria-hidden="true">⊟</span><span class="btn-label">1画面に戻す</span>
+      </button>
     </div>
     <div class="split-player-grid">
       ${panels}
@@ -277,6 +319,7 @@ export async function renderSplitPlayer(primaryVideo, secondaryVideo) {
     updatePlayerVideoTitle('2画面表示');
     hideDescriptionContainer();
     setupSplitPlayerEventHandlers([primaryVideo, secondaryVideo]);
+    focusPlayerEntry();
   } catch (error) {
     console.error('Error rendering split player:', error);
     showToast('2画面表示の描画に失敗しました。');
@@ -452,10 +495,14 @@ function setupDanmakuToggle(toggleBtn) {
 
   let isDanmakuEnabled = true;
 
+  // ラベルだけ差し替える。textContent を書き換えるとアイコンの span まで消え、
+  // 狭い幅でアイコン表示にしたときに何のボタンか分からなくなる
+  const label = toggleBtn.querySelector('.btn-label') || toggleBtn;
+
   toggleBtn.addEventListener('click', () => {
     isDanmakuEnabled = !isDanmakuEnabled;
     toggleBtn.classList.toggle('active', isDanmakuEnabled);
-    toggleBtn.textContent = isDanmakuEnabled ? '弾幕 ON' : '弾幕 OFF';
+    label.textContent = isDanmakuEnabled ? '弾幕 ON' : '弾幕 OFF';
     toggleBtn.setAttribute('aria-pressed', String(isDanmakuEnabled));
     danmakuContainer.style.display = isDanmakuEnabled ? 'block' : 'none';
   });
@@ -681,8 +728,10 @@ export function playVideo(videoId, title, isLive) {
 
   showPlayer();
 
-  // グリッドが非表示になりフォーカスが落ちるため、プレイヤー先頭の戻るボタンへ移す
-  document.getElementById('back-btn')?.focus();
+  // グリッドが display:none になりフォーカスが body へ落ちる。戻るボタンは
+  // まだ描画されていないので、いったん main を掴んでおき、描画完了後に移す
+  pendingEntryFocus = true;
+  document.getElementById('main-content')?.focus();
 
   const nextVideo = { videoId, title, isLive };
   const primaryVideo = state.pendingSplitPrimary;
@@ -709,29 +758,12 @@ export function closePlayer() {
     state.activeChatSocket = null;
   }
 
-  stopChromeHeightTracking();
-
   const lastVideoId = state.currentPlayerVideos?.[0]?.videoId || '';
 
-  // UIをリセット
-  const playerView = document.getElementById('player-view');
-  const officialContainer = document.getElementById('official-container');
-  const clipsContainer = document.getElementById('clips-container');
-  const playerContainer = document.getElementById('player-container');
-
-  if (playerView) playerView.classList.add('hidden');
-
-  if (state.currentMode === 'official' && officialContainer) {
-    officialContainer.classList.remove('hidden');
-  } else if (clipsContainer) {
-    clipsContainer.classList.remove('hidden');
-  }
-
-  if (playerContainer) {
-    playerContainer.innerHTML = '';
-  }
-
-  hideDescriptionContainer();
+  // 以前はここで DOM 操作を手書きしていたため、clearPlayerContainer() を通らず
+  // 再生の後始末 (runPlaybackCleanup) を飛ばしていた。ui.js 側の closePlayer と
+  // 挙動が割れる原因にもなっていたので、dom.js の hidePlayer に一本化する
+  hidePlayer(state.currentMode);
   state.setCurrentPlayerVideos([]);
 
   // 再生前に選択していたカードへフォーカスを戻す

@@ -336,15 +336,8 @@
                 role="region"
                 aria-label="動画プレイヤー"
             >
-                <button
-                    id="back-btn"
-                    class="back-button"
-                    type="button"
-                    aria-label="一覧に戻る"
-                >
-                    <span class="icon" aria-hidden="true">←</span>
-                    <span>一覧に戻る</span>
-                </button>
+                <!-- 戻るボタンは操作バー内 (player.js が生成) へ移動した。
+                     専用の行を持たせると映像に使える高さがその分減るため -->
                 <h2 id="player-video-title" class="player-title"></h2>
 
                 <div id="player-container" class="player-container">

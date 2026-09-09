@@ -32,6 +32,8 @@ http://127.0.0.1:8010/app/?apiBaseUrl=http%3A%2F%2F127.0.0.1%3A8010
 - `#settings-btn` が viewport 内に見えている (≤480px では `.controls .icon-control-btn{width:100%}`)
 - 長い日本語タイトルの `-webkit-line-clamp` は全ブレークポイントで 2 行
 - 再生時: `.player-status-bar` / `.player-fallback-actions` は `flex-wrap:wrap` のため 375px で折り返すこと (クリップ・到達不可は blocker)。split 表示 (`split-player-status-bar`) も同条件で確認
+- 再生中は映像を最大化するため `body.is-player-open` で一覧向けの表示を畳む: `.feed-status-panel` は `display:none`、`.player-title` は `.sr-only` 相当 (見出しは AT に残す)、`main` の `max-width` 解除。閉じたら必ず元に戻ること (戻る / Esc / タブ切替の3経路すべて)
+- 900px 以下では操作列のボタンがアイコンのみになる (`.btn-label` を視覚的に隠す)。**ラベル要素を削除してはいけない** — アクセシブル名が失われる。アイコン (`.btn-icon`) は `aria-hidden="true"` 必須
 - 設定モーダルの API キー欄 (`type=password`) が `input[type=text]` と同じ見た目であること (セレクタは両対応が前提)
 
 ### 2. コントラスト (ライト/ダーク両方) + 視覚
@@ -59,7 +61,8 @@ http://127.0.0.1:8010/app/?apiBaseUrl=http%3A%2F%2F127.0.0.1%3A8010
 
 - ゲームドロップダウン: ArrowUp/Down で開閉・移動、Enter で確定、Escape で閉じる (ボタン外フォーカス時の Esc は document ハンドラが閉じる)、`aria-activedescendant` + `.focused` は close 時に必ず除去、ボタンに `aria-controls="game-options"` 必須
 - タブ (メンバー配信/切り抜き): ArrowLeft/Right で移動+切替、非アクティブ側は `tabindex="-1"`
-- プレイヤー: カード Enter → フォーカスは `#back-btn` へ、Esc (iframe 外フォーカス時) または戻るボタンで閉じて元のカードへ復帰。設定モーダル表示中の Esc はモーダル優先
+- プレイヤー: カード Enter → フォーカスは操作列先頭の `#back-btn` へ (操作列内に動的生成されるため、描画完了後に移る)、Esc (iframe 外フォーカス時) または戻るボタンで閉じて元のカードへ復帰。設定モーダル表示中の Esc はモーダル優先
+- 操作列は DOM 上も視覚上も映像より前。Tab 順が `#back-btn` → 各操作 → iframe になっていること (iframe より後ろに操作が来たら WCAG 2.4.3 の退行)
 - 設定モーダル: Tab がモーダル内で循環 (可視判定は `getClientRects().length>0`。`offsetParent` は fixed で誤判定するため不可)、Escape で閉じる、閉じたら `#settings-btn` にフォーカス復帰、背景は `inert`
 - サイドバー: 閉時は `inert`、ハンバーガーに `aria-expanded` 同期、Escape で閉じてフォーカス復帰
 - `type=url` への変更は禁止: バックエンド欄は IP 単体入力を許すため `type=text` + `inputmode=url` を維持する

@@ -124,11 +124,14 @@ stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
     --sidebar-width: 260px;
     --header-height: 52px;
     --max-width: 1600px;
-    --player-max: 1400px;
-    /* プレイヤーより上にある固定要素の合計高さ (ヘッダ・フィード状態・
-       戻る・タイトル・操作列と各間隔)。実測 314px に下側の余白を足した値。
-       動画の高さ上限を決めるのに使う */
-    --player-chrome-h: 330px;
+    /* 超高解像度で映像が無意味に巨大化しないための保険。
+       通常は高さ側 (--player-chrome-h) が先に効くため到達しない */
+    --player-max: 2560px;
+    /* プレイヤーより上にある固定要素の合計高さ (ヘッダ・操作列と余白)。
+       再生中はフィード状態・タイトル・戻るの専用行を畳むため、実測で
+       約110px まで縮む。JS が描画後に実測値を流し込むので、これは
+       初回描画までの暫定値 */
+    --player-chrome-h: 120px;
 
     /* ⏱️ トランジション: Apple の標準に近いイージング */
     --duration-fast: 0.15s;
@@ -1307,13 +1310,12 @@ main {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-xl);
-    max-width: var(--player-max);
     margin: 0 auto;
 }
 
-/* 戻る: 枠も塗りも持たないテキストボタン。色はアクセント */
+/* 戻る: 枠も塗りも持たないテキストボタン。色はアクセント。
+   操作列の中に置くようになったため align-self は不要 */
 .back-button {
-    align-self: flex-start;
     padding: 4px var(--spacing-sm) 4px 2px;
     background: transparent;
     border: none;
@@ -1404,7 +1406,7 @@ main {
    高さ基準で縮んだときは中央に寄せる。分割表示は各パネルが自前で
    高さを持つため対象外にする。 */
 .player-main > .player-embed-wrap {
-    width: min(100%, calc((100dvh - var(--player-chrome-h)) * 16 / 9));
+    width: min(100%, calc((100dvh - var(--player-chrome-h)) * 16 / 9), var(--player-max));
     margin-inline: auto;
 }
 
@@ -2311,4 +2313,136 @@ main {
     .hamburger-btn {
         min-width: 44px;
     }
+}
+
+/* ========================================
+   🎬 再生中の常時コンパクト化
+   映像に高さを譲るため、再生中だけ一覧向けの表示を畳む。
+   実測 (1266x683): 映像より上の高さ 314px → 約110px。
+   内訳は フィード状態 48px / 戻るの専用行 50px / タイトル 44px /
+   操作列と余白の圧縮。タイトル見出しは .sr-only で AT には残す。
+   ======================================== */
+
+/* 一覧の状態表示は再生中には関係がないので畳む */
+body.is-player-open .feed-status-panel {
+    display: none;
+}
+
+/* タイトルは YouTube のプレイヤー内にも出るため視覚的には重複。
+   見出し構造とプレイヤー領域の名前付けのため DOM には残す。
+   position:absolute になるので flex の gap も消費しない */
+body.is-player-open .player-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+}
+
+body.is-player-open main {
+    /* 大画面では高さが律速。一覧用の 1600px 上限は再生中だけ外す */
+    max-width: none;
+    padding-top: var(--spacing-sm);
+    padding-bottom: var(--spacing-md);
+}
+
+body.is-player-open #player-view {
+    gap: var(--spacing-md);
+}
+
+/* 概要欄だけは横に伸ばしすぎると読みにくいので行長を保つ */
+body.is-player-open #description-container {
+    max-width: 1400px;
+    margin-inline: auto;
+    width: 100%;
+}
+
+/* --- 操作列のコンパクト化 ---
+   DOM 順 (操作列 → 映像) は WCAG 2.4.3 のため変更しない。
+   flex-wrap も残す: 折り返しを禁止するとボタンが切れて到達不能になり、
+   a11y チェックリスト上の blocker になるため。狭い幅ではラベルを
+   隠してアイコンだけにし、1 行に収まるようにする */
+.player-main > .player-status-bar {
+    gap: var(--spacing-xs) var(--spacing-sm);
+    padding: 6px var(--spacing-md);
+    justify-content: flex-start;
+}
+
+.player-main > .player-status-bar > .back-button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* 状態テキストは可変幅。あふれても行を増やさず省略記号にする */
+.player-main > .player-status-bar > .player-panel-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.player-main > .player-status-bar > .player-fallback-actions {
+    flex: 0 0 auto;
+    margin-inline-start: auto;
+    gap: var(--spacing-sm);
+}
+
+/* アイコンとラベルの並び。ラベルを隠してもボタンの見た目が崩れないよう
+   ボタン自体を flex にする */
+.back-button,
+.player-secondary-btn,
+.player-fallback-open-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+}
+
+.btn-icon {
+    line-height: 1;
+    font-size: 0.9375rem;
+}
+
+@media (max-width: 900px) {
+    /* ラベルは視覚的にのみ隠す。要素を消すとボタンのアクセシブル名が
+       失われ、読み上げと音声操作が壊れる */
+    .player-main > .player-status-bar .btn-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border-width: 0;
+    }
+
+    .player-main > .player-status-bar .btn-icon {
+        font-size: 1.0625rem;
+    }
+
+    /* 状態テキストも同様に視覚的にのみ隠す。role=status /
+       aria-live を止めないため display:none にはしない */
+    .player-main > .player-status-bar > .player-panel-status {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border-width: 0;
+    }
+}
+
+/* 2画面のツールバーでも戻るは左端に置く */
+.split-player-toolbar .back-button {
+    margin-inline-end: auto;
 }
