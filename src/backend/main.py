@@ -26,6 +26,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -631,6 +632,20 @@ async def add_request_id(request: Request, call_next):
     response.headers["X-Request-ID"] = request.state.request_id
     return response
 
+
+@app.middleware("http")
+async def cache_static_frontend(request: Request, call_next):
+    """/app 配下の静的ファイルに短時間キャッシュを許可する。
+
+    StaticFiles は ETag/Last-Modified は付けるが Cache-Control を付けない
+    ため、条件付きGETをブラウザが自発的には使わない。ここは自分自身の
+    バンドル済みフロントエンドを配るだけなので、短い max-age でも実害はない。
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/app/") and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "private, max-age=60, must-revalidate"
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -638,6 +653,11 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["Authorization", "X-API-Key", "X-Request-ID", "Content-Type"],
 )
+
+# /api/v1/feed は自前で事前gzip圧縮しETag/Content-Encodingを設定済みのため、
+# GZipMiddlewareはそのレスポンスを素通しする(Content-Encoding設定済みはスキップされる)。
+# ここで効くのは静的な /app 配下 (style.css 等の無圧縮ファイル) だけ。
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 @app.exception_handler(HTTPException)

@@ -4,6 +4,10 @@ const fs = require("fs");
 const http = require("http");
 const https = require("https");
 const path = require("path");
+const zlib = require("zlib");
+
+// gzip の効果が薄いバイナリ形式には掛けない (二重圧縮で逆にサイズが増える)
+const COMPRESSIBLE_EXTENSIONS = new Set([".html", ".js", ".mjs", ".css", ".json", ".svg"]);
 
 const DEFAULT_BACKEND_PORT = 8010;
 const DEFAULT_BACKEND_URL = "https://youtube.dongurihub.com";
@@ -268,17 +272,57 @@ function startFrontendServer() {
         return;
       }
 
-      fs.readFile(target, (error, body) => {
-        if (error) {
+      fs.stat(target, (statError, stats) => {
+        if (statError) {
           response.writeHead(404).end();
           return;
         }
-        response.writeHead(200, {
+
+        // mtime は 1 秒未満を切り捨てるため toUTCString() で秒単位に揃える
+        // (If-Modified-Since はそもそも秒精度なので、これで一致判定できる)
+        const lastModified = new Date(stats.mtimeMs).toUTCString();
+        const headers = {
           "Content-Type": FRONTEND_MIME_TYPES[path.extname(target).toLowerCase()]
             || "application/octet-stream",
-          "Cache-Control": "no-store",
+          // ループバックのみで自分自身に配るだけの静的ファイルなので、
+          // 短時間キャッシュしても実害はない。must-revalidate で
+          // 期限切れ後は必ず If-Modified-Since を送らせる
+          "Cache-Control": "private, max-age=60, must-revalidate",
+          "Last-Modified": lastModified,
+        };
+
+        if (request.headers["if-modified-since"] === lastModified) {
+          response.writeHead(304, headers).end();
+          return;
+        }
+
+        fs.readFile(target, (error, body) => {
+          if (error) {
+            response.writeHead(404).end();
+            return;
+          }
+
+          const acceptEncoding = request.headers["accept-encoding"] || "";
+          const canGzip =
+            COMPRESSIBLE_EXTENSIONS.has(path.extname(target).toLowerCase()) &&
+            /\bgzip\b/.test(acceptEncoding);
+
+          if (!canGzip) {
+            response.writeHead(200, headers);
+            response.end(request.method === "HEAD" ? undefined : body);
+            return;
+          }
+
+          zlib.gzip(body, (gzipError, compressed) => {
+            if (gzipError) {
+              response.writeHead(200, headers);
+              response.end(request.method === "HEAD" ? undefined : body);
+              return;
+            }
+            response.writeHead(200, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
+            response.end(request.method === "HEAD" ? undefined : compressed);
+          });
         });
-        response.end(request.method === "HEAD" ? undefined : body);
       });
     });
 
