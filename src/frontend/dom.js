@@ -276,7 +276,15 @@ export function closeAllDropdowns() {
 export function updateGameSelectedText(text) {
   const gameSelectedText = getDOM("gameSelectedText");
   if (gameSelectedText) {
-    gameSelectedText.textContent = text || "";
+    const label = text || "";
+    gameSelectedText.textContent = label;
+    // aria-labelはaccessible nameとして可視テキストを完全に置き換えるため、
+    // 可視テキストを含めないとWCAG 2.5.3 (Label in Name) 違反になる
+    // (音声操作ユーザーが可視ラベルを読み上げても要素を選択できない)
+    gameSelectedText.setAttribute(
+      "aria-label",
+      `ゲームフィルターを選択: ${label}`,
+    );
   }
 }
 

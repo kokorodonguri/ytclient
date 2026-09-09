@@ -51,8 +51,9 @@ export function buildVideoCardHTML(item, currentUnixSeconds) {
       statusLabel = "動画";
     }
 
+    let timeStr = "";
     if (!item.is_live && !item.is_upcoming && item.timestamp) {
-      const timeStr = formatRelativeTime(item.timestamp, currentUnixSeconds);
+      timeStr = formatRelativeTime(item.timestamp, currentUnixSeconds);
       if (timeStr) {
         badgesHTML += `<span class="badge time-badge">${timeStr}</span>`;
       }
@@ -64,7 +65,12 @@ export function buildVideoCardHTML(item, currentUnixSeconds) {
     const uploader = escapeHTML(item.uploader || "");
     const thumbnail = escapeAttribute(item.thumbnail || "");
     const isLive = item.is_live ? "true" : "false";
-    const ariaLabel = `ビデオ: ${title} - ${uploader}`;
+    // accessible nameはaria-labelが可視テキストを丸ごと置き換えるため、
+    // カード内に見える文字列（状態ラベル・経過時間・タイトル・チャンネル名）を
+    // すべて含めないとWCAG 2.5.3 (Label in Name) 違反になる
+    const ariaLabel = [timeStr, statusLabel, `${title} - ${uploader}`]
+      .filter(Boolean)
+      .join("、");
 
     return `
       <button
