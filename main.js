@@ -574,16 +574,17 @@ function installSessionHooksOnce() {
       const requestHeaders = { ...details.requestHeaders };
       requestHeaders["User-Agent"] = CHROME_UA;
 
-      // file:// またはループバック配信 (127.0.0.1) からの埋め込み iframe 要求には
-      // YouTube が許容する Referer が付かない、または不正な埋め込みとみなされ
-      // 「動画プレーヤーの設定エラー (152/153)」で止まる。埋め込み元を youtube.com に明示する。
+      // Referer が全く無い (file:// 読み込み) 要求は YouTube に不正な埋め込みと
+      // みなされ「この動画は再生できません (152/153)」で止まるため、その場合だけ
+      // 埋め込み元を youtube.com として補う。
+      //
+      // ループバック配信 (http://127.0.0.1:<port>) の Referer は書き換えない。
+      // 実在するオリジンなので YouTube は通常の埋め込みとして受け付ける
+      // (実測: 素のループバック Referer では再生でき、youtube.com へ
+      // 書き換えると Referer とオリジンの不一致で逆に 152 で弾かれる)。
       const referer = requestHeaders.Referer || requestHeaders.referer;
-      const isFromFrontend = Boolean(
-        !referer ||
-        /^file:/i.test(referer) ||
-        (frontendServerOrigin && referer.startsWith(frontendServerOrigin))
-      );
-      if (isFromFrontend) {
+      const hasUsableReferer = Boolean(referer) && !/^file:/i.test(referer);
+      if (!hasUsableReferer) {
         delete requestHeaders.referer;
         requestHeaders.Referer = EMBED_REFERER;
       }
