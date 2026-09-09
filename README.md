@@ -10,8 +10,8 @@ Electron デスクトップアプリ、Android APK (Capacitor)、ブラウザか
 - `backend/` — **本番 (youtube.dongurihub.com) で稼働している実装**。domain/application/infrastructure/interfaces
   に分割されたレイヤードアーキテクチャで、RSS新着検知・レート制限・ライブチャットのfan-outなど
   `src/backend/main.py` より進んだ機能を持つ。systemd (`backend/deploy/vspo-backend.service`) 経由で
-  本番サーバー上に直接デプロイされており、Electron ビルドの配布経路にはまだ組み込まれていない
-  (差分・統合は未着手のフォローアップ)。`backend/README.md` 参照。
+  本番サーバー上に直接デプロイされており、Electron ビルドの配布経路にはまだ組み込まれていない。
+  `backend/README.md` と、統合手順を具体的にまとめた `BACKEND_UNIFICATION.md` を参照。
 - `src/frontend/` — Electron レンダラー / ブラウザ / APK 共通のフロントエンド (ESモジュール, ビルドツール不要)。
 - `main.js` — Electron メインプロセス。ローカルバックエンドの起動・単一インスタンス化・IPC・セキュリティ設定を担う。
 - `android/` — Capacitor で APK 化するためのラッパー。
