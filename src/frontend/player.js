@@ -63,6 +63,38 @@ function destroyActivePlayback() {
 
 setPlaybackCleanup(destroyActivePlayback);
 
+// プレイヤーより上にある要素 (ヘッダ・フィード状態・戻る・タイトル・操作列) は
+// 幅が狭いと折り返して高くなる (実測: 1280px 幅で 314px、420px 幅では 648px)。
+// CSS の固定値では足りないので、実際の位置を測って --player-chrome-h に流し込む。
+// 測るのは動画ボックスの「上端」だけで、ボックス自身の高さには依存しないため
+// 再帰的なレイアウト変化は起きない。
+const PLAYER_BOTTOM_GUTTER = 16;
+let chromeResizeHandler = null;
+
+function syncPlayerChromeHeight() {
+  const wrap = document.querySelector('.player-main > .player-embed-wrap');
+  if (!wrap) return;
+  const topOffset = wrap.getBoundingClientRect().top + window.scrollY;
+  document.documentElement.style.setProperty(
+    '--player-chrome-h',
+    `${Math.round(topOffset + PLAYER_BOTTOM_GUTTER)}px`,
+  );
+}
+
+function startChromeHeightTracking() {
+  syncPlayerChromeHeight();
+  if (chromeResizeHandler) return;
+  chromeResizeHandler = () => requestAnimationFrame(syncPlayerChromeHeight);
+  window.addEventListener('resize', chromeResizeHandler);
+}
+
+function stopChromeHeightTracking() {
+  if (!chromeResizeHandler) return;
+  window.removeEventListener('resize', chromeResizeHandler);
+  chromeResizeHandler = null;
+  document.documentElement.style.removeProperty('--player-chrome-h');
+}
+
 export async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
   if (!videoId || typeof videoId !== 'string') {
     console.error('Invalid video ID');
@@ -98,6 +130,8 @@ export async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
     });
     setPlayerHTML(playerHTML);
     updatePlayerVideoTitle(title);
+    // タイトル差し込み後に測る (タイトルの行数で上端が変わるため)
+    startChromeHeightTracking();
 
     // プレイヤー要素の参照を取得してイベントを設定
     setupPlayerEventHandlers({
@@ -238,6 +272,8 @@ export async function renderSplitPlayer(primaryVideo, secondaryVideo) {
 
   try {
     setPlayerHTML(generateSplitPlayerHTML(primaryVideo, secondaryVideo));
+    // 2画面はパネルごとに高さを持つので単一プレイヤー用の追従は止める
+    stopChromeHeightTracking();
     updatePlayerVideoTitle('2画面表示');
     hideDescriptionContainer();
     setupSplitPlayerEventHandlers([primaryVideo, secondaryVideo]);
@@ -672,6 +708,8 @@ export function closePlayer() {
     closeWebSocket(state.activeChatSocket);
     state.activeChatSocket = null;
   }
+
+  stopChromeHeightTracking();
 
   const lastVideoId = state.currentPlayerVideos?.[0]?.videoId || '';
 

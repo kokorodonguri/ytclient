@@ -125,6 +125,10 @@ stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
     --header-height: 52px;
     --max-width: 1600px;
     --player-max: 1400px;
+    /* プレイヤーより上にある固定要素の合計高さ (ヘッダ・フィード状態・
+       戻る・タイトル・操作列と各間隔)。実測 314px に下側の余白を足した値。
+       動画の高さ上限を決めるのに使う */
+    --player-chrome-h: 330px;
 
     /* ⏱️ トランジション: Apple の標準に近いイージング */
     --duration-fast: 0.15s;
@@ -1390,6 +1394,18 @@ main {
     aspect-ratio: 16/9;
     background: #000;
     position: relative;
+}
+
+/* 単一プレイヤーは幅からしか大きさを決めていなかったため、ウィンドウを
+   小さくすると 16:9 の箱が表示領域より高くなり、下が見切れていた
+   (実測: ビューポート高 683px に対して箱の高さ 680px、上に 314px の
+   ヘッダ類があるため 311px はみ出す)。
+   幅基準の 16:9 と「画面に残っている高さ」の小さい方に合わせ、
+   高さ基準で縮んだときは中央に寄せる。分割表示は各パネルが自前で
+   高さを持つため対象外にする。 */
+.player-main > .player-embed-wrap {
+    width: min(100%, calc((100dvh - var(--player-chrome-h)) * 16 / 9));
+    margin-inline: auto;
 }
 
 .player-embed-frame {
