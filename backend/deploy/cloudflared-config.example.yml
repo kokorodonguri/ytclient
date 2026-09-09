@@ -1,0 +1,30 @@
+# cloudflared の ingress 設定サンプル
+#
+# 配置先: /etc/cloudflared/config.yml （systemd サービスとして動かす場合）
+#         または ~/.cloudflared/config.yml （手元で試す場合）
+#
+# <TUNNEL_ID> と <YOUR_HOSTNAME> を実際の値に置き換えること。
+#
+# nginx は挟まない構成。cloudflared がループバックの uvicorn へ直接つなぐ。
+# TLS は Cloudflare 側で終端されるので、バックエンドは平文 HTTP のままでよい。
+
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+# 接続が切れたときの再接続を粘り強くする
+retries: 5
+grace-period: 30s
+
+ingress:
+  - hostname: <YOUR_HOSTNAME>
+    service: http://127.0.0.1:8010
+    originRequest:
+      # WebSocket（ライブチャット）は既定で通るが明示しておく
+      noTLSVerify: false
+      connectTimeout: 30s
+      # pytchat のチャット配信は接続を張りっぱなしにするため長めにとる
+      # 0 は「無制限」。短いとライブチャットが定期的に切れる
+      tcpKeepAlive: 30s
+
+  # 上のホスト名以外は 404。Tunnel を他用途と共用する場合はここに追記する
+  - service: http_status:404

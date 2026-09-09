@@ -1,0 +1,41 @@
+[Unit]
+Description=VSPO Client Backend API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=donguri0423
+Group=donguri0423
+WorkingDirectory=/home/donguri0423/yt-backend
+EnvironmentFile=-/etc/vspo-backend.env
+ExecStart=/home/donguri0423/yt-backend/.venv-prod/bin/python /home/donguri0423/yt-backend/main.py 8010 127.0.0.1
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+MemoryHigh=2G
+MemoryMax=3G
+TasksMax=256
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CacheDirectory=vspo-backend
+CacheDirectoryMode=0700
+Environment=XDG_CACHE_HOME=/var/cache/vspo-backend
+Environment=VSPO_FEED_CACHE_PATH=/var/cache/vspo-backend/feed.json
+
+[Install]
+WantedBy=multi-user.target
