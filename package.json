@@ -7,6 +7,8 @@
     "backend": "python src/backend/main.py",
     "backend:lan": "python src/backend/main.py 8010 0.0.0.0",
     "check": "node --experimental-vm-modules scripts/check-syntax.mjs && python -m py_compile src/backend/main.py",
+    "test": "python -m pytest",
+    "lint": "python -m ruff check backend tests && python -m mypy",
     "build:backend": "python -m PyInstaller --onefile --name backend --distpath build_temp --workpath build_temp/pyinstaller --specpath build_temp src/backend/main.py",
     "stamp:icon": "node scripts/stamp-icon.mjs",
     "vendor:copy": "node -e \"const fs=require('fs');const path=require('path');const s='node_modules/hls.js/dist/hls.light.min.js';const d='src/frontend/vendor/hls.light.min.js';if(fs.existsSync(s)){fs.mkdirSync(path.dirname(d),{recursive:true});fs.copyFileSync(s,d);}\"",

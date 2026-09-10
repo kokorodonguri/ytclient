@@ -91,6 +91,12 @@ def create_app() -> FastAPI:
     # コメント・ストリームの JSON。
     app.add_middleware(GZipMiddleware, minimum_size=500)
 
+    # 組み立てたものを app に載せておく。運用時の内省と、テストから同じ
+    # インスタンスを触るために使う（ルートのクロージャを掘らずに済む）。
+    app.state.feed_store = store
+    app.state.live_chat_hub = chat_hub
+    app.state.feed_collector = collector
+
     register_exception_handlers(app)
     app.include_router(http_routes.create_router(store, comments, streams))
     app.include_router(ws_routes.create_router(chat_hub))

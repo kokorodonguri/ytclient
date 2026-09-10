@@ -112,17 +112,23 @@ def create_router(
         """
         wants_gzip = "gzip" in (accept_encoding or "").lower()
         payload, etag, is_gzipped = store.response_parts(prefer_gzip=wants_gzip)
-        headers = {
-            "ETag": etag,
-            "Cache-Control": "no-cache",
-            "Vary": "Accept-Encoding",
-        }
+        headers = {"ETag": etag, "Cache-Control": "no-cache"}
 
+        # Vary は「自分で Content-Encoding を付けたとき」だけ自分で付ける。
+        # GZipMiddleware は Content-Encoding が既に立っている応答を素通しし、
+        # そのとき Vary も足さない。逆に非圧縮で返すと middleware 側が
+        # add_vary_header で足すので、こちらでも付けると二重になる。
+        # （この非対称は starlette の実装依存なので、両方の経路を
+        #  tests/test_public_api.py で固定してある）
         if if_none_match and etag in [tag.strip() for tag in if_none_match.split(",")]:
-            return Response(status_code=304, headers=headers)
+            # 304 は本文を持たないので Content-Encoding は付けない。
+            return Response(
+                status_code=304, headers={**headers, "Vary": "Accept-Encoding"}
+            )
 
         if is_gzipped:
             headers["Content-Encoding"] = "gzip"
+            headers["Vary"] = "Accept-Encoding"
 
         return Response(
             content=payload,
