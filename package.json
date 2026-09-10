@@ -17,6 +17,14 @@
   },
   "build": {
     "appId": "com.vspo.client",
+    "//files": "asar に入れるものだけを明示する。省略すると electron-builder がリポジトリ直下を丸ごと詰め、build_temp の APIキーや .claude/worktrees まで配布物に混入する。フロントエンド本体は extraResources 経由で resourcesPath/frontend に入るため asar 側には不要で、preload.js だけが __dirname 解決で必要。",
+    "files": [
+      "main.js",
+      "src/frontend/preload.js",
+      "assets/icon.ico",
+      "package.json",
+      "!node_modules/**"
+    ],
     "productName": "VSPO Client",
     "directories": {
       "output": "dist"
