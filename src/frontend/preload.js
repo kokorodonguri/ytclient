@@ -169,60 +169,9 @@ const exposedAPI = {
       return await ipcRenderer.invoke("app:set-backend-config", {
         backendUrl: config.backendUrl,
         apiKey,
-        startLocalBackend: Boolean(config.startLocalBackend),
       });
     } catch (error) {
       secureLog("error", "Failed to set backend config", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
-  },
-
-  /**
-   * Listen to app events
-   * @param {string} channel - Event channel
-   * @param {Function} listener - Event listener
-   * @returns {Function} Cleanup function
-   */
-  onAppEvent: (channel, listener) => {
-    try {
-      // Whitelist allowed channels
-      const allowedChannels = [
-        "app:theme-changed",
-        "app:online-status",
-        "app:update-available",
-      ];
-
-      if (!allowedChannels.includes(channel)) {
-        throw new Error(`Channel '${channel}' is not allowed`);
-      }
-
-      if (typeof listener !== "function") {
-        throw new Error("Listener must be a function");
-      }
-
-      // Set up listener with argument validation
-      const validatedListener = (event, ...args) => {
-        try {
-          listener(...args);
-        } catch (error) {
-          secureLog("error", "Error in app event listener", {
-            channel,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      };
-
-      ipcRenderer.on(channel, validatedListener);
-
-      // Return cleanup function
-      return () => {
-        ipcRenderer.removeListener(channel, validatedListener);
-      };
-    } catch (error) {
-      secureLog("error", "Failed to register event listener", {
-        channel,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;

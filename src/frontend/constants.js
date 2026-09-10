@@ -49,6 +49,9 @@ function getRuntimeApiBaseUrl() {
 
 export const API_KEY_STORAGE_KEY = 'vspo.apiKey';
 export const API_BASE_URL_STORAGE_KEY = 'vspo.apiBaseUrl';
+// 最後に成功したフィード。サーバーが落ちていても起動直後に一覧を出すため
+// (feedCache.js)。サーバー側の VSPO_FEED_CACHE_PATH と同じ役割。
+export const FEED_CACHE_STORAGE_KEY = 'vspo.feedCache';
 
 export const API_CONFIG = {
   BASE_URL: getRuntimeApiBaseUrl(),

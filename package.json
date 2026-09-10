@@ -4,18 +4,15 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "backend": "python src/backend/main.py",
-    "backend:lan": "python src/backend/main.py 8010 0.0.0.0",
-    "check": "node --experimental-vm-modules scripts/check-syntax.mjs && python -m py_compile src/backend/main.py",
+    "check": "node --experimental-vm-modules scripts/check-syntax.mjs",
     "test": "python -m pytest",
     "lint": "npm run lint:js && npm run lint:py",
     "lint:js": "eslint .",
     "lint:py": "python -m ruff check backend tests && python -m mypy",
-    "build:backend": "python -m PyInstaller --onefile --name backend --distpath build_temp --workpath build_temp/pyinstaller --specpath build_temp src/backend/main.py",
     "stamp:icon": "node scripts/stamp-icon.mjs",
     "vendor:copy": "node -e \"const fs=require('fs');const path=require('path');const s='node_modules/hls.js/dist/hls.light.min.js';const d='src/frontend/vendor/hls.light.min.js';if(fs.existsSync(s)){fs.mkdirSync(path.dirname(d),{recursive:true});fs.copyFileSync(s,d);}\"",
     "postinstall": "npm run vendor:copy",
-    "build": "npm run vendor:copy && npm run build:backend && electron-builder --win dir && npm run stamp:icon && electron-builder --win nsis --prepackaged dist/win-unpacked",
+    "build": "npm run vendor:copy && electron-builder --win dir && npm run stamp:icon && electron-builder --win nsis --prepackaged dist/win-unpacked",
     "android:sync": "npx cap sync android",
     "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/build-apk.ps1"
   },
@@ -44,10 +41,6 @@
       "installerHeaderIcon": "assets/icon.ico"
     },
     "extraResources": [
-      {
-        "from": "build_temp/backend.exe",
-        "to": "backend.exe"
-      },
       {
         "from": "src/frontend",
         "to": "frontend"

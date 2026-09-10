@@ -1840,21 +1840,6 @@ main {
     outline-offset: var(--focus-ring-offset);
 }
 
-.settings-check {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    color: var(--text-secondary);
-    font-size: 0.8125rem;
-    font-weight: 600;
-}
-
-.settings-check input {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--primary);
-}
-
 .settings-current {
     min-height: 20px;
     margin: 0;
@@ -2223,11 +2208,6 @@ main {
         width: 44px;
         height: 44px;
         min-width: 44px;
-    }
-
-    .settings-check input {
-        width: 24px;
-        height: 24px;
     }
 }
 

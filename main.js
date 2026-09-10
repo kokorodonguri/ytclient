@@ -1,8 +1,6 @@
 const { app, BrowserWindow, shell, session, ipcMain } = require("electron");
-const { spawn } = require("child_process");
 const fs = require("fs");
 const http = require("http");
-const https = require("https");
 const path = require("path");
 const zlib = require("zlib");
 
@@ -11,8 +9,6 @@ const COMPRESSIBLE_EXTENSIONS = new Set([".html", ".js", ".mjs", ".css", ".json"
 
 const DEFAULT_BACKEND_PORT = 8010;
 const DEFAULT_BACKEND_URL = "https://youtube.dongurihub.com";
-const BACKEND_READY_TIMEOUT_MS = 15000;
-const BACKEND_READY_POLL_MS = 300;
 const APP_ID = "com.vspo.client";
 const APP_ICON_PATH = path.join(__dirname, "assets", "icon.ico");
 
@@ -40,8 +36,6 @@ const EMBED_REFERER = "https://www.youtube.com/";
 
 
 let mainWindow = null;
-let backendProcess = null;
-let isQuitting = false;
 let sessionHooksInstalled = false;
 let ipcHandlersInstalled = false;
 let frontendServer = null;
@@ -49,7 +43,6 @@ let frontendServerOrigin = null;
 let frontendServerStarting = null;
 let runtimeBackendUrl = DEFAULT_BACKEND_URL;
 let runtimeApiKey = "";
-let startLocalBackend = false;
 
 if (process.platform === "win32") {
   app.setAppUserModelId(APP_ID);
@@ -106,25 +99,6 @@ function normalizeBackendUrl(rawUrl) {
   }
 }
 
-function isLoopbackBackendUrl(rawUrl) {
-  try {
-    const { hostname } = new URL(rawUrl);
-    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
-  } catch {
-    return false;
-  }
-}
-
-function getBackendPort(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.port) return Number(parsed.port);
-    return parsed.protocol === "https:" ? 443 : 80;
-  } catch {
-    return DEFAULT_BACKEND_PORT;
-  }
-}
-
 function getConfigPaths() {
   const paths = [];
   if (process.env.VSPO_BACKEND_CONFIG) {
@@ -159,21 +133,8 @@ function loadRuntimeBackendConfig() {
   runtimeBackendUrl = configuredUrl || DEFAULT_BACKEND_URL;
   runtimeApiKey = String(process.env.VSPO_API_KEY || fileConfig.apiKey || "").trim();
 
-  if (typeof fileConfig.startLocalBackend === "boolean") {
-    startLocalBackend =
-      fileConfig.startLocalBackend && isLoopbackBackendUrl(runtimeBackendUrl);
-  } else {
-    startLocalBackend = isLoopbackBackendUrl(runtimeBackendUrl);
-  }
-
   if (!configuredUrl) {
-    // 設定ファイルも環境変数も無い初回起動。既定の公開エンドポイントに
-    // 接続するため、開発者が意図せずローカルバックエンドの起動を
-    // 期待して混乱しないよう明示しておく
-    console.log(
-      `No backend config found, defaulting to ${DEFAULT_BACKEND_URL} ` +
-        "(local backend will not be started; use Settings or VSPO_BACKEND_URL to point at a loopback backend).",
-    );
+    console.log(`No backend config found, using ${DEFAULT_BACKEND_URL}.`);
   }
 }
 
@@ -188,7 +149,7 @@ function writeBackendConfig(config) {
   return configPath;
 }
 
-async function applyBackendConfig(rawBackendUrl, shouldStartLocalBackend, rawApiKey) {
+async function applyBackendConfig(rawBackendUrl, rawApiKey) {
   const backendUrl = normalizeBackendUrl(rawBackendUrl);
   if (!backendUrl) {
     return { ok: false, error: "Invalid backend URL" };
@@ -196,35 +157,20 @@ async function applyBackendConfig(rawBackendUrl, shouldStartLocalBackend, rawApi
 
   runtimeBackendUrl = backendUrl;
   runtimeApiKey = typeof rawApiKey === "string" ? rawApiKey.trim() : runtimeApiKey;
-  startLocalBackend =
-    typeof shouldStartLocalBackend === "boolean"
-      ? shouldStartLocalBackend && isLoopbackBackendUrl(backendUrl)
-      : isLoopbackBackendUrl(backendUrl);
 
   const configPath = writeBackendConfig({
     backendUrl: runtimeBackendUrl,
     apiKey: runtimeApiKey,
-    startLocalBackend,
   });
 
-  if (!startLocalBackend) {
-    stopBackendProcess();
-  } else {
-    startBackendProcess();
-    await waitForBackendReady(5000);
-  }
-
+  // 画面は apiBaseUrl をクエリで受け取るため、URL を変えたら読み直す
   if (mainWindow && !mainWindow.isDestroyed()) {
     await mainWindow.loadURL(getFrontendUrl());
   }
 
   return {
     ok: true,
-    config: {
-      backendUrl: runtimeBackendUrl,
-      startLocalBackend,
-      configPath,
-    },
+    config: { backendUrl: runtimeBackendUrl, configPath },
   };
 }
 
@@ -363,172 +309,6 @@ function getPreloadPath() {
   return path.join(__dirname, "src", "frontend", "preload.js");
 }
 
-function getBackendLaunchConfig() {
-  if (!startLocalBackend) return null;
-
-  const backendPort = getBackendPort(runtimeBackendUrl);
-
-  if (app.isPackaged) {
-    const executablePath = path.join(process.resourcesPath, "backend.exe");
-    if (fs.existsSync(executablePath)) {
-      return {
-        command: executablePath,
-        args: [String(backendPort), "127.0.0.1"],
-        cwd: process.resourcesPath,
-      };
-    }
-    console.warn(`Packaged backend not found: ${executablePath}`);
-    return null;
-  }
-
-  return {
-    command: process.env.PYTHON || "python",
-    args: [
-      path.join(__dirname, "src", "backend", "main.py"),
-      String(backendPort),
-      "127.0.0.1",
-    ],
-    cwd: __dirname,
-  };
-}
-
-function startBackendProcess() {
-  if (backendProcess) return;
-
-  const launchConfig = getBackendLaunchConfig();
-  if (!launchConfig) return;
-
-  const { command, args, cwd } = launchConfig;
-  // stdio: "ignore" は本番での原因究明を不可能にするため、ログへ落とす
-  const logPath = path.join(app.getPath("userData"), "backend.log");
-  let stdio = "ignore";
-  let logFd = null;
-  try {
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    logFd = fs.openSync(logPath, "a");
-    stdio = ["ignore", logFd, logFd];
-  } catch (error) {
-    console.warn("Failed to open backend log, falling back to ignore:", error);
-  }
-
-  // ローカル起動時もキーを揃えておく（設定済みなら認証あり、未設定ならループバック無認証）
-  const backendEnv = { ...process.env };
-  if (runtimeApiKey) {
-    backendEnv.VSPO_API_KEY = runtimeApiKey;
-  }
-
-  backendProcess = spawn(command, args, {
-    cwd,
-    stdio,
-    windowsHide: true,
-    env: backendEnv,
-  });
-
-  const closeLog = () => {
-    if (logFd !== null) {
-      try {
-        fs.closeSync(logFd);
-      } catch {
-        /* noop */
-      }
-      logFd = null;
-    }
-  };
-
-  backendProcess.once("error", (error) => {
-    console.error("Failed to start backend:", error);
-    closeLog();
-    backendProcess = null;
-  });
-
-  backendProcess.once("exit", (code, signal) => {
-    if (!isQuitting && code !== 0 && signal !== "SIGTERM") {
-      console.warn(
-        `Backend exited unexpectedly: code=${code} signal=${signal} (log: ${logPath})`,
-      );
-    }
-    closeLog();
-    backendProcess = null;
-  });
-}
-
-function stopBackendProcess() {
-  if (!backendProcess || backendProcess.killed) return;
-
-  const pid = backendProcess.pid;
-  // PyInstaller onefile はブートローダが実体を子プロセスで起動するため、
-  // 親だけを kill するとサーバが孤児化してポートを掴み続ける。
-  if (process.platform === "win32" && pid) {
-    try {
-      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-    } catch (error) {
-      console.warn("taskkill failed, falling back to kill():", error);
-      backendProcess.kill();
-    }
-  } else {
-    backendProcess.kill();
-  }
-  backendProcess = null;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function checkBackendReady() {
-  return new Promise((resolve) => {
-    const client = runtimeBackendUrl.startsWith("https:") ? https : http;
-    const request = client.get(runtimeBackendUrl, (response) => {
-      let body = "";
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => {
-        body += chunk;
-        if (body.length > 4096) {
-          request.destroy();
-          resolve(false);
-        }
-      });
-      response.on("end", () => {
-        if (response.statusCode !== 200) {
-          resolve(false);
-          return;
-        }
-        try {
-          const payload = JSON.parse(body);
-          resolve(
-            payload?.status === "success" &&
-              typeof payload?.message === "string" &&
-              payload.message.includes("VSPO Client API"),
-          );
-        } catch {
-          resolve(false);
-        }
-      });
-    });
-
-    request.setTimeout(1000, () => {
-      request.destroy();
-      resolve(false);
-    });
-
-    request.on("error", () => resolve(false));
-  });
-}
-
-async function waitForBackendReady(timeoutMs = BACKEND_READY_TIMEOUT_MS) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await checkBackendReady()) return true;
-    await delay(BACKEND_READY_POLL_MS);
-  }
-  return false;
-}
-
 function openExternalSafely(url) {
   if (!isSafeExternalUrl(url)) return;
   shell.openExternal(url).catch((error) => {
@@ -658,25 +438,6 @@ function installSessionHooksOnce() {
       callback({ responseHeaders });
     },
   );
-
-  ses.webRequest.onHeadersReceived(
-    {
-      urls: [
-        "http://127.0.0.1:8000/*",
-        "http://localhost:8000/*",
-        "http://127.0.0.1:8010/*",
-        "http://localhost:8010/*",
-        `${runtimeBackendUrl}/*`,
-      ],
-    },
-    (details, callback) => {
-      const responseHeaders = { ...details.responseHeaders };
-      responseHeaders["Cache-Control"] = ["no-store, no-cache, must-revalidate"];
-      responseHeaders.Pragma = ["no-cache"];
-      responseHeaders.Expires = ["0"];
-      callback({ responseHeaders });
-    },
-  );
 }
 
 function installIpcHandlersOnce() {
@@ -700,7 +461,6 @@ function installIpcHandlersOnce() {
     config: {
       backendUrl: runtimeBackendUrl,
       apiKey: runtimeApiKey,
-      startLocalBackend,
       defaultBackendUrl: DEFAULT_BACKEND_URL,
     },
   }));
@@ -708,11 +468,7 @@ function installIpcHandlersOnce() {
     if (!config || typeof config !== "object") {
       return { ok: false, error: "Invalid config" };
     }
-    return applyBackendConfig(
-      config.backendUrl,
-      config.startLocalBackend,
-      config.apiKey,
-    );
+    return applyBackendConfig(config.backendUrl, config.apiKey);
   });
 
   ipcMain.on("app:log", (_event, logEntry) => {
@@ -781,9 +537,18 @@ function createMainWindow() {
     mainWindow = null;
   });
 
-  mainWindow.loadURL(getFrontendUrl()).catch(() => {
+  // ここが失敗するのは「画面そのものを読めなかった」場合だけで、
+  // バックエンドに繋がらない場合ではない (それは画面側が扱う)。
+  // 以前の文言は Backend Required で、発火条件と食い違っていた。
+  mainWindow.loadURL(getFrontendUrl()).catch((error) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    const fallbackHtml = `<html><body style="background:#0f1720;color:#ffffff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div><h1>Backend Required</h1><p>Cannot connect to backend: ${runtimeBackendUrl}</p></div></body></html>`;
+    console.error("Failed to load the app UI:", error);
+    const fallbackHtml =
+      `<html lang="ja"><body style="background:#0f1720;color:#ffffff;` +
+      `display:flex;align-items:center;justify-content:center;height:100vh;` +
+      `margin:0;font-family:system-ui,sans-serif;text-align:center;">` +
+      `<div><h1>画面を読み込めませんでした</h1>` +
+      `<p>アプリを再起動してください。</p></div></body></html>`;
     mainWindow.loadURL(
       `data:text/html;charset=UTF-8,${encodeURIComponent(fallbackHtml)}`,
     );
@@ -794,7 +559,7 @@ function createMainWindow() {
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
-  // 二重起動はバックエンドのポート衝突と孤児プロセスの原因になるため即終了する
+  // 2 つ目のウィンドウを開かず、既存のウィンドウを前に出す
   app.quit();
 } else {
   app.on("second-instance", () => {
@@ -810,8 +575,6 @@ if (!hasSingleInstanceLock) {
     installIpcHandlersOnce();
     // 画面の配信サーバはウィンドウを作る前に上げる (URL が決まらないため)
     await startFrontendServer();
-    startBackendProcess();
-    await waitForBackendReady();
     createMainWindow();
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
@@ -820,8 +583,6 @@ if (!hasSingleInstanceLock) {
 }
 
 app.on("before-quit", () => {
-  isQuitting = true;
-  stopBackendProcess();
   if (frontendServer) {
     try {
       frontendServer.close();

@@ -19,6 +19,7 @@ import {
 } from "./api.js";
 import { initializeUI } from "./ui.js";
 import { renderGrid } from "./grid.js";
+import { readCachedFeed, writeCachedFeed } from "./feedCache.js";
 import { playVideo } from "./player.js";
 import { log, logError } from "./utils.js";
 import { MODES, MESSAGES, TIMING } from "./constants.js";
@@ -36,6 +37,9 @@ let consecutiveFeedFailures = 0;
 // 中身が変わるのは収集ワーカーの 1 周期ごと。同じ ETag なら
 // 状態の入れ替えもグリッドの作り直しも丸ごと省く
 let lastRenderedEtag = "";
+// キャッシュから描画した直後かどうか。サーバーからの初回応答までは
+// 「保存済みの一覧を見ている」ことを利用者に伝える必要がある。
+let showingCachedFeed = false;
 const MAX_FEED_BACKOFF_MS = 60000;
 
 /**
@@ -45,6 +49,65 @@ const MAX_FEED_BACKOFF_MS = 60000;
 function nextBackoffDelay() {
   const factor = 2 ** Math.min(consecutiveFeedFailures, 5);
   return Math.min(TIMING.POLLING_INTERVAL * factor, MAX_FEED_BACKOFF_MS);
+}
+
+/**
+ * 保存済みフィードがあれば、サーバーに問い合わせる前に描画する
+ *
+ * サーバー集約でバックエンドは単一障害点になった。ここで先に描くことで、
+ * サーバーが落ちていても・機内モードでも、直前に見えていた一覧が出る。
+ * @returns {boolean} キャッシュから描画したか
+ */
+function hydrateFromCache() {
+  const cached = readCachedFeed();
+  if (!cached) return false;
+
+  state.setAppData({
+    official: cached.official,
+    clips: cached.clips,
+    // サーバーからの応答を待っている状態なので、更新中として見せる
+    is_building: true,
+    last_updated: cached.last_updated,
+    last_error: null,
+  });
+  showingCachedFeed = true;
+  renderGridWithState();
+  updateFeedStatus({
+    status: "loading",
+    label: "更新中",
+    summary: "保存済みの一覧を表示しています",
+  });
+  log(MODULE, "Rendered the cached feed while waiting for the server");
+  return true;
+}
+
+/**
+ * オンライン・オフラインの遷移を購読する
+ *
+ * これまでは fetch の失敗からオフラインを推測するだけだったので、復帰しても
+ * バックオフの待ち時間が明けるまで（最大 60 秒）画面が変わらなかった。
+ * Electron・ブラウザ・Capacitor いずれも Chromium なので navigator.onLine が
+ * そのまま使える。
+ */
+function setupConnectivityHandlers() {
+  window.addEventListener("offline", () => {
+    log(MODULE, "Went offline - pausing polling");
+    state.clearPollingTimer();
+    updateFeedStatus({
+      status: "offline",
+      label: "オフライン",
+      summary: showingCachedFeed
+        ? "ネットワークに接続していません（保存済みの一覧を表示しています）"
+        : "ネットワークに接続していません",
+    });
+  });
+
+  window.addEventListener("online", () => {
+    log(MODULE, "Back online - refreshing immediately");
+    // バックオフの待ち時間を待たずに取り直す
+    consecutiveFeedFailures = 0;
+    loadAndRenderFeed();
+  });
 }
 
 // ========================================
@@ -82,6 +145,10 @@ async function initializeApp() {
     log(MODULE, "Loading API credentials...");
     await initApiCredentials();
 
+    // 2.7 保存済みフィードがあれば先に描く。サーバーが落ちていても
+    //     起動直後に一覧が出る（サーバー側の永続キャッシュと同じ役割）。
+    hydrateFromCache();
+
     // 3. API接続を確認
     log(MODULE, "Testing API connection...");
     const isConnected = await testApiConnection();
@@ -108,7 +175,10 @@ async function initializeApp() {
       await loadAndRenderFeed();
     };
 
-    // 6. フィードを読み込んでレンダリング
+    // 6. オンライン復帰を監視する
+    setupConnectivityHandlers();
+
+    // 7. フィードを読み込んでレンダリング
     log(MODULE, "Loading initial feed...");
     await loadAndRenderFeed();
 
@@ -174,9 +244,16 @@ async function loadAndRenderFeed() {
     });
 
     lastRenderedEtag = feedData.etag || "";
+    showingCachedFeed = false;
 
     // グリッドをレンダリング
     renderGridWithState();
+
+    // 収集が完了した状態だけ保存する。is_building 中は不完全な一覧なので、
+    // それを次回の起動時に見せると「メンバーが減った」ように見える。
+    if (!feedData.is_building && (feedData.official.length || feedData.clips.length)) {
+      writeCachedFeed(feedData);
+    }
 
     // 構築中の場合、ポーリングを開始
     if (state.appData.is_building) {
@@ -195,7 +272,9 @@ async function loadAndRenderFeed() {
     updateFeedStatus({
       status: "offline",
       label: "オフライン",
-      summary: errorMsg,
+      summary: showingCachedFeed
+        ? `${errorMsg}（保存済みの一覧を表示しています）`
+        : errorMsg,
     });
     // 失敗が続く間はトーストを出し続けない（初回のみ通知）
     if (consecutiveFeedFailures === 1) {
@@ -247,6 +326,13 @@ function scheduleNextFeedRefresh(delayMs = TIMING.POLLING_INTERVAL) {
   // 既存のタイマーをクリア
   if (state.pollingTimer) {
     clearTimeout(state.pollingTimer);
+  }
+
+  // オフライン中は再試行を積まない。復帰は online イベントが拾う。
+  if (navigator.onLine === false) {
+    log(MODULE, "Offline - not scheduling a refresh");
+    state.pollingTimer = null;
+    return;
   }
 
   log(MODULE, `Scheduling next feed refresh in ${delayMs}ms`);

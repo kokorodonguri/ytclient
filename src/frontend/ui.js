@@ -418,21 +418,18 @@ async function openSettingsModal() {
   const modal = getDOM("settingsModal");
   const input = getDOM("backendUrlInput");
   const keyInput = getDOM("apiKeyInput");
-  const check = getDOM("startLocalBackendCheck");
   const current = getDOM("settingsCurrentBackend");
 
-  if (!modal || !input || !check) return;
+  if (!modal || !input) return;
 
   let backendUrl = API_CONFIG.BASE_URL;
   let apiKey = API_CONFIG.API_KEY;
-  let startLocalBackend = false;
 
   try {
     const result = await window.api?.getBackendConfig?.();
     if (result?.ok && result.config) {
       backendUrl = result.config.backendUrl || backendUrl;
       apiKey = result.config.apiKey || apiKey;
-      startLocalBackend = Boolean(result.config.startLocalBackend);
     }
   } catch (error) {
     logError(MODULE, "Failed to load backend config", error);
@@ -440,7 +437,6 @@ async function openSettingsModal() {
 
   input.value = backendUrl;
   if (keyInput) keyInput.value = apiKey;
-  check.checked = startLocalBackend;
   if (current) {
     current.textContent = `現在の接続先: ${backendUrl}`;
   }
@@ -474,10 +470,9 @@ function normalizeBackendInput(rawValue) {
 async function saveSettings() {
   const input = getDOM("backendUrlInput");
   const keyInput = getDOM("apiKeyInput");
-  const check = getDOM("startLocalBackendCheck");
   const saveBtn = getDOM("settingsSaveBtn");
 
-  if (!input || !check) return;
+  if (!input) return;
 
   const backendUrl = normalizeBackendInput(input.value);
   if (!backendUrl) {
@@ -490,11 +485,7 @@ async function saveSettings() {
   if (saveBtn) saveBtn.disabled = true;
   try {
     if (window.api?.setBackendConfig) {
-      const result = await window.api.setBackendConfig({
-        backendUrl,
-        apiKey,
-        startLocalBackend: check.checked,
-      });
+      const result = await window.api.setBackendConfig({ backendUrl, apiKey });
       if (!result?.ok) {
         throw new Error(result?.error || "保存に失敗しました");
       }

@@ -1,5 +1,4 @@
 {
   "backendUrl": "https://youtube.dongurihub.com",
-  "apiKey": "",
-  "startLocalBackend": false
+  "apiKey": ""
 }

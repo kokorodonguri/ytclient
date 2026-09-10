@@ -54,9 +54,6 @@ export function initDomCache() {
     settingsCancelBtn: document.getElementById("settings-cancel-btn"),
     backendUrlInput: document.getElementById("backend-url-input"),
     apiKeyInput: document.getElementById("api-key-input"),
-    startLocalBackendCheck: document.getElementById(
-      "start-local-backend-check",
-    ),
     settingsCurrentBackend: document.getElementById(
       "settings-current-backend",
     ),

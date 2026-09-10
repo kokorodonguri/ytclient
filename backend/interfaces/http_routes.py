@@ -31,6 +31,16 @@ from interfaces.deps import (
     validate_video_id,
 )
 
+# コメントとストリーム解決はサーバー側で TTL キャッシュしている
+# (COMMENTS_CACHE_TTL_SECONDS / STREAM_CACHE_TTL_SECONDS)。クライアント側の
+# HTTP キャッシュにも残ると TTL が二重にかかり、特に HLS の URL は数時間で
+# 失効するため「再生できない URL を掴み続ける」ことになる。ここで止める。
+#
+# フィードは逆で、Cache-Control: no-cache + ETag により毎回検証させて 304 を
+# 取らせる。以前は Electron 側の webRequest フックが全バックエンド応答へ
+# no-store を強制していて、その 304 が一度も効いていなかった。
+_NO_STORE = {"Cache-Control": "no-store"}
+
 
 def create_router(
     store: FeedStore, comments: CommentsService, streams: StreamService
@@ -155,7 +165,10 @@ def create_router(
         video_id: str,
         limit: int = Query(default=20, ge=0, le=MAX_COMMENTS_LIMIT),
     ):
-        return _fetch_comments(video_id, limit)
+        return JSONResponse(
+            content=_fetch_comments(video_id, limit),
+            headers=_NO_STORE,
+        )
 
     @router.get(
         "/api/v1/videos/{video_id}/stream",
@@ -165,7 +178,7 @@ def create_router(
         """アプリ内ネイティブ再生用の HLS を返す。配信中のみ対象。"""
         validated = validate_video_id(video_id)
         try:
-            return streams.get_stream(validated)
+            return JSONResponse(content=streams.get_stream(validated), headers=_NO_STORE)
         except UpcomingStreamError as error:
             # 409。クライアントはこれを見て「まだ始まっていない」と表示する
             raise HTTPException(
@@ -191,6 +204,9 @@ def create_router(
         video_id: str,
         limit: int = Query(default=20, ge=0, le=MAX_COMMENTS_LIMIT),
     ):
-        return _fetch_comments(video_id, limit)
+        return JSONResponse(
+            content=_fetch_comments(video_id, limit),
+            headers=_NO_STORE,
+        )
 
     return router
