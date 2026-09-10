@@ -4,7 +4,7 @@ yt_dlp への依存はこのモジュールに閉じる。呼び出し側は
 「チャンネルのアイテム一覧」「検索結果」「動画詳細」という語彙だけを扱う。
 """
 
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 import yt_dlp
 
@@ -17,7 +17,7 @@ from config import (
 from domain.video import build_video_item, safe_str
 
 # 一覧取得用。extract_flat で 1 リクエストあたりの情報量を抑える
-LIST_YDL_OPTS: Dict[str, Any] = {
+LIST_YDL_OPTS: dict[str, Any] = {
     "quiet": True,
     "extract_flat": "in_playlist",
     "skip_download": True,
@@ -30,7 +30,7 @@ LIST_YDL_OPTS: Dict[str, Any] = {
 }
 
 # 個別動画の詳細取得用（配信状態の確定に使う）
-DETAIL_YDL_OPTS: Dict[str, Any] = {
+DETAIL_YDL_OPTS: dict[str, Any] = {
     "quiet": True,
     "skip_download": True,
     "ignoreerrors": True,
@@ -40,7 +40,7 @@ DETAIL_YDL_OPTS: Dict[str, Any] = {
 }
 
 # コメント取得用。getcomments は非常に重い
-COMMENTS_YDL_OPTS: Dict[str, Any] = {
+COMMENTS_YDL_OPTS: dict[str, Any] = {
     "quiet": True,
     "skip_download": True,
     "getcomments": True,
@@ -66,7 +66,7 @@ class ChannelFetchResult(NamedTuple):
     一部メンバーだけが表示される状態が無言で発生する。
     """
 
-    items: List[Dict[str, Any]]
+    items: list[dict[str, Any]]
     failed_tabs: int
     channel_id: str
 
@@ -79,7 +79,7 @@ class _YtDlpLogCapture:
     """タブ不存在と通信失敗を区別するための最小 yt-dlp logger。"""
 
     def __init__(self):
-        self._messages: List[str] = []
+        self._messages: list[str] = []
 
     def debug(self, _message: str) -> None:
         pass
@@ -93,17 +93,17 @@ class _YtDlpLogCapture:
     def error(self, message: str) -> None:
         self._messages.append(safe_str(message))
 
-    def consume(self) -> List[str]:
+    def consume(self) -> list[str]:
         messages, self._messages = self._messages, []
         return messages
 
 
-def _tab_is_expectedly_absent(messages: List[str], tab_name: str) -> bool:
+def _tab_is_expectedly_absent(messages: list[str], tab_name: str) -> bool:
     marker = f"this channel does not have a {tab_name} tab"
     return any(marker in message.lower() for message in messages)
 
 
-def _extract_entries(ydl: "yt_dlp.YoutubeDL", url: str) -> Dict[str, Any]:
+def _extract_entries(ydl: "yt_dlp.YoutubeDL", url: str) -> dict[str, Any]:
     try:
         return ydl.extract_info(url, download=False) or {}
     except Exception as error:
@@ -113,10 +113,10 @@ def _extract_entries(ydl: "yt_dlp.YoutubeDL", url: str) -> Dict[str, Any]:
 
 def fetch_channel_items(
     channel_url: str,
-    published_timestamps: Optional[Dict[str, float]] = None,
+    published_timestamps: dict[str, float] | None = None,
 ) -> ChannelFetchResult:
     """チャンネルの streams / videos タブからアイテムを集める。"""
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     failed_tabs = 0
     channel_id = ""
     ydl_log = _YtDlpLogCapture()
@@ -148,7 +148,9 @@ def fetch_channel_items(
             for entry in info.get("entries", []):
                 item = build_video_item(
                     entry,
-                    info.get("title"),
+                    # title が無いチャンネルもある。None を渡すと
+                    # fallback_uploader: str の契約を破る
+                    safe_str(info.get("title")),
                     from_streams_tab=from_streams_tab,
                     published_timestamps=published_timestamps,
                 )
@@ -162,9 +164,9 @@ def fetch_channel_items(
     )
 
 
-def search_videos(query: str, limit: int = 30) -> List[Dict[str, Any]]:
+def search_videos(query: str, limit: int = 30) -> list[dict[str, Any]]:
     """検索クエリからアイテムを集める（切り抜き用）。"""
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     with yt_dlp.YoutubeDL(LIST_YDL_OPTS) as ydl:
         info = _extract_entries(ydl, f"ytsearch{limit}:{query}")
         for entry in info.get("entries", []):
@@ -174,7 +176,7 @@ def search_videos(query: str, limit: int = 30) -> List[Dict[str, Any]]:
     return items
 
 
-def fetch_video_detail(video_id: str) -> Dict[str, Any]:
+def fetch_video_detail(video_id: str) -> dict[str, Any]:
     """1 動画の詳細を取得する。失敗時は空 dict。"""
     cleaned_id = safe_str(video_id).strip()
     if not cleaned_id:
@@ -186,7 +188,7 @@ def fetch_video_detail(video_id: str) -> Dict[str, Any]:
     return {"id": cleaned_id, **detail}
 
 
-def fetch_video_comments(video_id: str) -> Dict[str, Any]:
+def fetch_video_comments(video_id: str) -> dict[str, Any]:
     """コメントと概要欄を含む生の情報を返す。整形は呼び出し側の責務。"""
     with yt_dlp.YoutubeDL(COMMENTS_YDL_OPTS) as ydl:
         return (
@@ -202,7 +204,7 @@ def fetch_video_comments(video_id: str) -> Dict[str, Any]:
 # ただし ignore_no_formats_error は立てる: 配信予定の動画は「フォーマットが
 # 無い」だけで、上流障害ではない。例外にすると 502 になり、クライアントが
 # 「まだ始まっていない」と「取得に失敗した」を区別できなくなる。
-STREAM_YDL_OPTS: Dict[str, Any] = {
+STREAM_YDL_OPTS: dict[str, Any] = {
     "quiet": True,
     "skip_download": True,
     "ignore_no_formats_error": True,
@@ -212,7 +214,7 @@ STREAM_YDL_OPTS: Dict[str, Any] = {
 }
 
 
-def fetch_video_stream_info(video_id: str) -> Dict[str, Any]:
+def fetch_video_stream_info(video_id: str) -> dict[str, Any]:
     """再生用フォーマットを含む生の情報を返す。選択は呼び出し側の責務。"""
     cleaned_id = safe_str(video_id).strip()
     if not cleaned_id:

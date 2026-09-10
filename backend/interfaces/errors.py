@@ -5,7 +5,7 @@
 """
 
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -34,8 +34,8 @@ def error_payload(
     code: str,
     message: str,
     request_id: str,
-    details: Optional[Any] = None,
-) -> Dict[str, Any]:
+    details: Any | None = None,
+) -> dict[str, Any]:
     return {
         "status": "error",
         "error": {

@@ -7,7 +7,7 @@ yt_dlp の extract_flat は投稿日時を落とすことが多いため、
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any
 
 from config import (
     UPSTREAM_SOCKET_TIMEOUT_SECONDS,
@@ -23,7 +23,7 @@ _NAMESPACES = {
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
-def _load_recent_entries(channel_id: str) -> List[Dict[str, Any]]:
+def _load_recent_entries(channel_id: str) -> list[dict[str, Any]]:
     """RSSエントリをアプリ内で扱いやすい最小形式へ変換する。"""
     if not is_valid_youtube_channel_id(channel_id):
         logger.warning("RSS discovery ignored invalid channel ID")
@@ -46,7 +46,7 @@ def _load_recent_entries(channel_id: str) -> List[Dict[str, Any]]:
     fallback_uploader = root.findtext(
         "atom:author/atom:name", default="", namespaces=_NAMESPACES
     )
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for entry in root.findall("atom:entry", _NAMESPACES):
         video_id = entry.findtext("yt:videoId", default="", namespaces=_NAMESPACES)
         title = entry.findtext("atom:title", default="", namespaces=_NAMESPACES)
@@ -73,7 +73,7 @@ def _load_recent_entries(channel_id: str) -> List[Dict[str, Any]]:
     return entries
 
 
-def load_recent_video_items(channel_id: str) -> List[Dict[str, Any]]:
+def load_recent_video_items(channel_id: str) -> list[dict[str, Any]]:
     """RSSから直近の公開動画を正規化して返す。失敗時は空リスト。"""
     items = []
     for entry in _load_recent_entries(channel_id):
@@ -83,7 +83,7 @@ def load_recent_video_items(channel_id: str) -> List[Dict[str, Any]]:
     return items
 
 
-def load_recent_published_timestamps(channel_id: str) -> Dict[str, float]:
+def load_recent_published_timestamps(channel_id: str) -> dict[str, float]:
     """video_id -> 公開時刻(epoch秒) の辞書を返す。失敗時は空 dict。"""
     return {
         str(entry["id"]): float(entry["timestamp"])

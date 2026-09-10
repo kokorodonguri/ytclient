@@ -12,7 +12,6 @@ NOTE: プロセス内シングルトン（FeedStore と同じ制約）。
 
 import asyncio
 from collections import defaultdict
-from typing import Dict, Optional, Set
 
 from config import WS_MAX_ROOMS, WS_MAX_ROOMS_PER_CLIENT, logger
 from infrastructure import live_chat
@@ -39,18 +38,18 @@ class _Room:
 
     def __init__(self, video_id: str):
         self.video_id = video_id
-        self.subscribers: Set[asyncio.Queue] = set()
-        self.task: Optional[asyncio.Task] = None
+        self.subscribers: set[asyncio.Queue] = set()
+        self.task: asyncio.Task | None = None
         self.chat = None
         self.closed = False
 
 
 class LiveChatHub:
     def __init__(self):
-        self._rooms: Dict[str, _Room] = {}
+        self._rooms: dict[str, _Room] = {}
         # クライアントキー -> そのキーが「新規に開いた」video_id 集合。
         # 相乗り（既存ルームへの subscribe）は数えず、新規オープンだけを数える。
-        self._opened_by_client: Dict[str, Set[str]] = defaultdict(set)
+        self._opened_by_client: dict[str, set[str]] = defaultdict(set)
         # ルームの生成・破棄が購読者の出入りと競合しないよう直列化する
         self._lock = asyncio.Lock()
 
@@ -65,10 +64,11 @@ class LiveChatHub:
 
         async with self._lock:
             room = self._rooms.get(video_id)
-            is_new_room = room is None or room.closed
             owned = self._opened_by_client[client_key]
 
-            if is_new_room:
+            # 条件を変数に逃がさず直接書く。そうしないと、この分岐を抜けた
+            # あとの room が「None ではない」ことを型検査器が追えない。
+            if room is None or room.closed:
                 # 既存ルームへの相乗りは常に許す。増やせないのは新規のときだけ。
                 # 閉じたルームの張り直しは総数が増えないので全体上限に数えない。
                 if room is None and len(self._rooms) >= WS_MAX_ROOMS:
@@ -111,7 +111,7 @@ class LiveChatHub:
         self, video_id: str, queue: asyncio.Queue, client_key: str
     ) -> None:
         """購読を解除する。最後の1人が抜けたらルームを閉じる。"""
-        task_to_wait: Optional[asyncio.Task] = None
+        task_to_wait: asyncio.Task | None = None
 
         async with self._lock:
             # このキーの保有集合から外す。ルームが他の購読者で生き残っても、

@@ -16,7 +16,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from config import logger
 from domain.feed_rules import normalize_feed
@@ -32,7 +32,7 @@ class FeedStore:
     ):
         self._lock = threading.Lock()
         self._cache_path = cache_path
-        self._data: Dict[str, Any] = {
+        self._data: dict[str, Any] = {
             "official": [],
             "clips": [],
             "is_building": True,
@@ -152,18 +152,18 @@ class FeedStore:
             if complete_failure:
                 self._failed_channels += 1
 
-    def _snapshot_failures(self) -> Tuple[int, int]:
+    def _snapshot_failures(self) -> tuple[int, int]:
         with self._failure_lock:
             return self._degraded_channels, self._failed_channels
 
     # --- 状態の更新 ---------------------------------------------------------
 
-    def _snapshot_locked(self) -> Tuple[int, Dict[str, Any]]:
+    def _snapshot_locked(self) -> tuple[int, dict[str, Any]]:
         """公開待ちのスナップショットに版番号を付けて返す。_lock 保持下で呼ぶ。"""
         self._version += 1
         return self._version, dict(self._data)
 
-    def _publish(self, version: int, snapshot: Dict[str, Any]) -> None:
+    def _publish(self, version: int, snapshot: dict[str, Any]) -> None:
         """応答ボディと ETag を組み立て、差し替えだけをロック内で行う。
 
         json.dumps は約 1.5 MB のフィードを走査し、SHA-256 もその全体を
@@ -222,8 +222,8 @@ class FeedStore:
 
     def replace(
         self,
-        official: List[Dict[str, Any]],
-        clips: List[Dict[str, Any]],
+        official: list[dict[str, Any]],
+        clips: list[dict[str, Any]],
         is_building: bool = False,
     ) -> None:
         degraded, failed = self._snapshot_failures()
@@ -251,12 +251,12 @@ class FeedStore:
         if not is_building:
             self._persist_successful_feed()
 
-    def official_items_snapshot(self) -> List[Dict[str, Any]]:
+    def official_items_snapshot(self) -> list[dict[str, Any]]:
         """RSSオーバーレイ構築用に公式フィードの浅いコピーを返す。"""
         with self._lock:
             return [dict(item) for item in self._data["official"]]
 
-    def _feed_age_seconds_locked(self) -> Optional[float]:
+    def _feed_age_seconds_locked(self) -> float | None:
         """最後の更新からの経過秒。_lock 保持下で呼ぶこと。
 
         「last_updated が入っているか」だけでは、収集スレッドが詰まって
@@ -272,7 +272,7 @@ class FeedStore:
             return None
         return max(0.0, (datetime.now() - updated_at).total_seconds())
 
-    def readiness_snapshot(self) -> Dict[str, Any]:
+    def readiness_snapshot(self) -> dict[str, Any]:
         """監視用に、フィードの可用性だけを小さいペイロードで返す。"""
         with self._lock:
             return {
@@ -303,7 +303,7 @@ class FeedStore:
             self._last_discovery_added = max(0, int(added))
             self._discovery_runs += 1
 
-    def merge_official(self, items: List[Dict[str, Any]]) -> int:
+    def merge_official(self, items: list[dict[str, Any]]) -> int:
         """RSSで検知した新着だけを公式フィードへ追加し、追加件数を返す。"""
         if not items:
             return 0
@@ -339,7 +339,7 @@ class FeedStore:
 
     # --- 読み出し -----------------------------------------------------------
 
-    def response_parts(self, prefer_gzip: bool = False) -> Tuple[bytes, str, bool]:
+    def response_parts(self, prefer_gzip: bool = False) -> tuple[bytes, str, bool]:
         """(応答ボディ, ETag, gzip済みか) を返す。
 
         __init__ と各更新経路が publish 済みなので、ここは参照を読むだけ。

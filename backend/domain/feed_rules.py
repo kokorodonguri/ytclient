@@ -4,10 +4,10 @@
 規則をこの 1 ファイルに閉じ込めて意図をコメントで残す。
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 
-def sort_feed_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def sort_feed_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """timestamp の新しい順。クライアント側 sortVideos と同一の規則にする。
 
     ここに live 優先などの追加規則を入れてはならない。
@@ -23,7 +23,7 @@ def sort_feed_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     )
 
 
-def dedupe_by_video_id(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def dedupe_by_video_id(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """同一動画の重複を先勝ちで除去する（順序は保持）。"""
     seen = set()
     unique = []
@@ -35,6 +35,6 @@ def dedupe_by_video_id(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique
 
 
-def normalize_feed(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def normalize_feed(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """配信用に整えたリストを返す（重複排除 → 並び替え）。"""
     return sort_feed_items(dedupe_by_video_id(items))

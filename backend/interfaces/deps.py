@@ -4,7 +4,6 @@
 翻訳する境界。下位層は HTTPException を知らない。
 """
 
-from typing import Optional
 
 from fastapi import Header, HTTPException, Request
 
@@ -35,8 +34,8 @@ _feed_rate_limiter = FixedWindowRateLimiter(
 
 
 def require_api_key(
-    authorization: Optional[str] = Header(default=None),
-    x_api_key: Optional[str] = Header(default=None),
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
 ) -> None:
     if not is_auth_required():
         return

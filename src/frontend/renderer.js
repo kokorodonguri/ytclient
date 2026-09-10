@@ -9,7 +9,6 @@ import {
   initDomCache,
   getDOM,
   showErrorToast,
-  showToast,
   updateFeedStatus,
 } from "./dom.js";
 import {
@@ -18,12 +17,7 @@ import {
   initApiCredentials,
   testApiConnection,
 } from "./api.js";
-import {
-  initializeUI,
-  setSelectedChannel,
-  setMode,
-  closePlayer,
-} from "./ui.js";
+import { initializeUI } from "./ui.js";
 import { renderGrid } from "./grid.js";
 import { playVideo } from "./player.js";
 import { log, logError } from "./utils.js";

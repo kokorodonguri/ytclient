@@ -142,7 +142,9 @@ def test_a_timed_out_channel_counts_as_degraded(build_app, monkeypatch):
         ["https://www.youtube.com/@one", "https://www.youtube.com/@two"],
     )
     monkeypatch.setattr(
-        collector, "_collect_channel", lambda url: (_ for _ in ()).throw(RuntimeError("x"))
+        collector,
+        "_collect_channel",
+        lambda url: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
     collector._collect_official(deadline=time.monotonic() + 5)

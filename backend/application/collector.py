@@ -6,10 +6,13 @@
 
 import threading
 import time
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any
 
+from application.channels import CLIP_QUERIES, TARGET_CHANNELS
+from application.feed_store import FeedStore
 from config import (
     BACKGROUND_CYCLE_TIMEOUT_SECONDS,
     BACKGROUND_REFRESH_SECONDS,
@@ -22,8 +25,6 @@ from config import (
     STREAM_DETAIL_WORKERS,
     logger,
 )
-from application.channels import CLIP_QUERIES, TARGET_CHANNELS
-from application.feed_store import FeedStore
 from domain.video import (
     apply_video_detail,
     build_video_item,
@@ -50,8 +51,8 @@ def _run_bounded(
     max_workers: int,
     deadline: float,
     label: str,
-    on_failure: Optional[Callable[[Any, Optional[BaseException]], None]] = None,
-) -> List[Any]:
+    on_failure: Callable[[Any, BaseException | None], None] | None = None,
+) -> list[Any]:
     """並列実行し、締切内に返ったぶんだけを返す。
 
     executor.map には timeout が無い。yt-dlp の socket_timeout はソケット
@@ -67,7 +68,7 @@ def _run_bounded(
         return []
 
     executor = ThreadPoolExecutor(max_workers=max_workers)
-    results: List[Any] = []
+    results: list[Any] = []
     try:
         futures = [(executor.submit(function, item), item) for item in items]
         for future, item in futures:
@@ -94,13 +95,13 @@ class FeedCollector:
     def __init__(self, store: FeedStore):
         self._store = store
         self._stop_event = threading.Event()
-        self._threads: List[threading.Thread] = []
+        self._threads: list[threading.Thread] = []
         self._channel_ids_lock = threading.Lock()
         self._discovery_lock = threading.Lock()
         self._discovery_overlay_lock = threading.Lock()
         # video_id -> (最初に観測した monotonic 時刻, 項目)
-        self._discovery_overlay: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-        self._channel_ids: Set[str] = {
+        self._discovery_overlay: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._channel_ids: set[str] = {
             channel_id
             for url in TARGET_CHANNELS
             if (channel_id := extract_channel_id(url))
@@ -148,7 +149,7 @@ class FeedCollector:
 
     def _collect_channel(
         self, channel_url: str
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]]]:
         channel_id = extract_channel_id(channel_url)
         published = (
             load_recent_published_timestamps(channel_id)
@@ -193,8 +194,8 @@ class FeedCollector:
 
         return resolved_channel_id, result_items
 
-    def _collect_official(self, deadline: float) -> List[Dict[str, Any]]:
-        items: List[Dict[str, Any]] = []
+    def _collect_official(self, deadline: float) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
 
         def record_failure(_channel_url: Any, _error: Any) -> None:
             # 締切超過・例外でチャンネルが 1 つ落ちると、そのメンバーの動画が
@@ -217,8 +218,8 @@ class FeedCollector:
         return items
 
     @staticmethod
-    def _collect_clips(deadline: float) -> List[Dict[str, Any]]:
-        items: List[Dict[str, Any]] = []
+    def _collect_clips(deadline: float) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
         if not CLIP_QUERIES:
             return items
         # 1 クエリが ytsearch30 で数秒かかる。直列だとクエリ数ぶん
@@ -236,21 +237,21 @@ class FeedCollector:
 
     @staticmethod
     def _refine_stream_details(
-        items: List[Dict[str, Any]],
+        items: list[dict[str, Any]],
         deadline: float,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """配信タブ由来の直近動画だけ個別取得して配信状態を確定させる。
 
         全件やると重すぎるので、チャンネルごとに新しいものから
         STREAM_DETAIL_LIMIT_PER_CHANNEL 件に絞る。
         """
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        grouped: dict[str, list[dict[str, Any]]] = {}
         for item in items:
             if not item.get("from_streams_tab"):
                 continue
             grouped.setdefault(safe_str(item.get("uploader")), []).append(item)
 
-        candidates: List[Dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         for uploader_items in grouped.values():
             candidates.extend(
                 sorted(
@@ -263,7 +264,7 @@ class FeedCollector:
         if not candidates:
             return items
 
-        detail_by_id: Dict[str, Dict[str, Any]] = {}
+        detail_by_id: dict[str, dict[str, Any]] = {}
         for detail in _run_bounded(
             lambda item: fetch_video_detail(safe_str(item.get("video_id")).strip()),
             candidates,
@@ -283,8 +284,8 @@ class FeedCollector:
 
     @staticmethod
     def _refine_discovered_item(
-        item: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
+        item: dict[str, Any],
+    ) -> dict[str, Any] | None:
         """新着1件だけ詳細取得し、配信状態と公開可否を確定する。"""
         video_id = safe_str(item.get("video_id")).strip()
         detail = fetch_video_detail(video_id)
@@ -302,7 +303,7 @@ class FeedCollector:
 
     def _remember_discovery_items(
         self,
-        items: List[Dict[str, Any]],
+        items: list[dict[str, Any]],
     ) -> None:
         """RSS 由来の項目を、完全更新の入れ替えに重ねるため保持する。"""
         now = time.monotonic()
@@ -346,7 +347,7 @@ class FeedCollector:
         )[:_MAX_DISCOVERY_OVERLAY_ITEMS]
         self._discovery_overlay = dict(newest)
 
-    def _forget_discovery_items(self, video_ids: Set[str]) -> None:
+    def _forget_discovery_items(self, video_ids: set[str]) -> None:
         """完全更新の一覧に現れた項目を overlay から外す。
 
         一覧が正本を持っているなら重ねる必要はない。ここで外さないと、
@@ -358,7 +359,7 @@ class FeedCollector:
             for video_id in video_ids:
                 self._discovery_overlay.pop(video_id, None)
 
-    def _discovery_overlay_snapshot(self) -> List[Dict[str, Any]]:
+    def _discovery_overlay_snapshot(self) -> list[dict[str, Any]]:
         now = time.monotonic()
         with self._discovery_overlay_lock:
             self._prune_discovery_overlay_locked(now)
@@ -385,8 +386,8 @@ class FeedCollector:
             for item in current_items
             if safe_str(item.get("video_id")).strip()
         }
-        seen_rss_items: List[Dict[str, Any]] = []
-        candidates_by_id: Dict[str, Dict[str, Any]] = {}
+        seen_rss_items: list[dict[str, Any]] = []
+        candidates_by_id: dict[str, dict[str, Any]] = {}
         deadline = time.monotonic() + DISCOVERY_CYCLE_TIMEOUT_SECONDS
         for feed_items in _run_bounded(
             load_recent_video_items,
@@ -406,7 +407,7 @@ class FeedCollector:
         if not candidates_by_id:
             return 0
 
-        refined: List[Dict[str, Any]] = []
+        refined: list[dict[str, Any]] = []
         for item in _run_bounded(
             self._refine_discovered_item,
             candidates_by_id.values(),

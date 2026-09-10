@@ -30,6 +30,12 @@ select = [
 ignore = [
     # 例外の再送出で from を強制しない（設定エラーは意図的に元例外を切る）
     "B904",
+    # このリポジトリのコメントと docstring は日本語で書く。全角の括弧・
+    # コロン・感嘆符を「紛らわしい」と警告されても直す先が無いので落とす。
+    # 文字列リテラル（RUF001）も、UI 文言に全角が入るのは正しい。
+    "RUF001",
+    "RUF002",
+    "RUF003",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -51,8 +57,10 @@ known-first-party = [
 python_version = "3.11"
 files = ["backend"]
 mypy_path = "backend"
-# 段階導入。まずは「型が付いている箇所の矛盾」だけを見る。
+# yt_dlp / pytchat は型情報を持たない
 ignore_missing_imports = true
+# 注釈の無い関数の本体も検査する。既存コードはこれを付けても通る。
+check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unreachable = true

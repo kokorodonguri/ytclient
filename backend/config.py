@@ -10,7 +10,6 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional
 
 # --- サービス識別 ---
 API_VERSION = "3.2.0"
@@ -25,7 +24,8 @@ WEAK_API_KEYS = {"change-me", "changeme", "replace-me", "secret", "password"}
 
 # --- CORS ---
 DEFAULT_ALLOWED_ORIGINS = [
-    # Capacitor (Android) の WebView オリジン。androidScheme は capacitor.config.json 参照。
+    # Capacitor (Android) の WebView オリジン。
+    # androidScheme は capacitor.config.json 参照。
     "http://localhost",
     "https://localhost",
     "capacitor://localhost",
@@ -44,7 +44,7 @@ def _config_error(message: str) -> "SystemExit":
     return SystemExit(EXIT_CONFIG_ERROR)
 
 
-def _split_env_list(name: str, default: List[str]) -> List[str]:
+def _split_env_list(name: str, default: list[str]) -> list[str]:
     raw_value = os.environ.get(name, "").strip()
     if not raw_value:
         return default
@@ -55,7 +55,7 @@ ALLOWED_ORIGINS = _split_env_list("VSPO_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGIN
 DEFAULT_ALLOWED_ORIGIN_REGEX = (
     r"^http://(127\.0\.0\.1|localhost)(:\d+)?$"
 )
-ALLOWED_ORIGIN_REGEX: Optional[str] = (
+ALLOWED_ORIGIN_REGEX: str | None = (
     os.environ.get("VSPO_ALLOWED_ORIGIN_REGEX", "").strip()
     or DEFAULT_ALLOWED_ORIGIN_REGEX
 )
@@ -176,7 +176,7 @@ TRUST_CLOUDFLARE_HEADERS = _env_bool("VSPO_TRUST_CLOUDFLARE_HEADERS", False)
 # 同一ホストのループバックから 8010 へ繋ぐので既定はループバックのみ。
 # これを検証しないと、nginx:80 等でバックエンドに直接届く経路から
 # CF-Connecting-IP を偽装してレート制限キーを乗っ取れてしまう。
-def _parse_networks(name: str, default: List[str]) -> list:
+def _parse_networks(name: str, default: list[str]) -> list:
     import ipaddress
 
     raw = _split_env_list(name, default)
@@ -228,7 +228,7 @@ else:
     BASE_DIR = Path(__file__).resolve().parent
 
 
-def _resolve_frontend_dir() -> Optional[Path]:
+def _resolve_frontend_dir() -> Path | None:
     """/app で配信する UI のディレクトリを決める。
 
     親ディレクトリを無条件に探索してはならない。本番は main.py と config.py を
@@ -253,9 +253,9 @@ def _resolve_frontend_dir() -> Optional[Path]:
     return None
 
 
-FRONTEND_DIR: Optional[Path] = _resolve_frontend_dir()
+FRONTEND_DIR: Path | None = _resolve_frontend_dir()
 _feed_cache_path = os.environ.get("VSPO_FEED_CACHE_PATH", "").strip()
-FEED_CACHE_PATH: Optional[Path] = (
+FEED_CACHE_PATH: Path | None = (
     Path(_feed_cache_path).expanduser() if _feed_cache_path else None
 )
 

@@ -12,12 +12,12 @@ Cloudflare が上書きした値（クライアントは書き換えられない
 """
 
 import ipaddress
-from typing import Mapping, Optional
+from collections.abc import Mapping
 
 from config import TRUST_CLOUDFLARE_HEADERS, TRUSTED_PROXY_NETWORKS
 
 
-def _normalize_ip(raw_value: Optional[str]) -> Optional[str]:
+def _normalize_ip(raw_value: str | None) -> str | None:
     if not raw_value:
         return None
     try:
@@ -26,7 +26,7 @@ def _normalize_ip(raw_value: Optional[str]) -> Optional[str]:
         return None
 
 
-def _is_trusted_proxy(peer_ip: Optional[str]) -> bool:
+def _is_trusted_proxy(peer_ip: str | None) -> bool:
     if not peer_ip:
         return False
     try:
@@ -36,7 +36,7 @@ def _is_trusted_proxy(peer_ip: Optional[str]) -> bool:
     return any(address in network for network in TRUSTED_PROXY_NETWORKS)
 
 
-def client_key(headers: Mapping[str, str], peer_host: Optional[str]) -> str:
+def client_key(headers: Mapping[str, str], peer_host: str | None) -> str:
     """レート制限に使う、検証済みの安定したクライアントキーを返す。"""
     peer_ip = _normalize_ip(peer_host)
 

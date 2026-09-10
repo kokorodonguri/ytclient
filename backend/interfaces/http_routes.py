@@ -3,17 +3,10 @@
 ここには「受け取って、ユースケースを呼んで、HTTP に直す」以外を書かない。
 """
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 
-from config import (
-    API_VERSION,
-    MAX_COMMENTS_LIMIT,
-    READINESS_MAX_FEED_AGE_SECONDS,
-    SERVICE_NAME,
-)
 from application.comments_service import (
     CommentsService,
     ServiceBusyError,
@@ -24,6 +17,12 @@ from application.stream_service import (
     NoStreamError,
     StreamService,
     UpcomingStreamError,
+)
+from config import (
+    API_VERSION,
+    MAX_COMMENTS_LIMIT,
+    READINESS_MAX_FEED_AGE_SECONDS,
+    SERVICE_NAME,
 )
 from interfaces.deps import (
     enforce_feed_rate_limit,
@@ -98,8 +97,8 @@ def create_router(
         include_in_schema=False,
     )
     def get_feed(
-        if_none_match: Optional[str] = Header(default=None),
-        accept_encoding: Optional[str] = Header(default=None),
+        if_none_match: str | None = Header(default=None),
+        accept_encoding: str | None = Header(default=None),
     ):
         """事前シリアライズ・事前 gzip 済みのフィードを返す。
 

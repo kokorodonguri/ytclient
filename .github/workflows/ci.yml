@@ -36,6 +36,12 @@ jobs:
         run: python -c "import main"
         working-directory: backend
 
+      - name: ruff
+        run: python -m ruff check backend tests
+
+      - name: mypy
+        run: python -m mypy
+
       - name: pytest
         run: python -m pytest
 
@@ -58,3 +64,6 @@ jobs:
 
       - name: npm run check
         run: npm run check
+
+      - name: eslint
+        run: npm run lint:js

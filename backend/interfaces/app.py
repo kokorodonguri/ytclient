@@ -12,6 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from application.channels import TARGET_CHANNELS
+from application.collector import FeedCollector
+from application.comments_service import CommentsService
+from application.feed_store import FeedStore
+from application.live_chat_hub import LiveChatHub
+from application.stream_service import StreamService
 from config import (
     ALLOWED_ORIGIN_REGEX,
     ALLOWED_ORIGINS,
@@ -20,12 +26,6 @@ from config import (
     FRONTEND_DIR,
     validate_security_config,
 )
-from application.channels import TARGET_CHANNELS
-from application.collector import FeedCollector
-from application.comments_service import CommentsService
-from application.feed_store import FeedStore
-from application.live_chat_hub import LiveChatHub
-from application.stream_service import StreamService
 from interfaces import http_routes, ws_routes
 from interfaces.errors import register_exception_handlers
 

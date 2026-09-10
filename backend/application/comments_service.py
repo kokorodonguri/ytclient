@@ -13,7 +13,7 @@ HTTP のステータスコードには翻訳しない（interfaces 層の責務�
 """
 
 import threading
-from typing import Any, Dict
+from typing import Any
 
 from config import (
     COMMENTS_CACHE_MAX_ENTRIES,
@@ -48,7 +48,7 @@ class CommentsService:
         # 動画IDごとの無制限なロック辞書はDoS対象になるため固定ストライプを使う。
         self._singleflight_locks = tuple(threading.Lock() for _ in range(32))
 
-    def get_comments(self, video_id: str, limit: int) -> Dict[str, Any]:
+    def get_comments(self, video_id: str, limit: int) -> dict[str, Any]:
         bounded_limit = max(0, min(limit, MAX_COMMENTS_LIMIT))
         cached = self._cache.get(video_id)
         if cached is not None:
@@ -94,7 +94,7 @@ class CommentsService:
             lock.release()
 
     @staticmethod
-    def _limit_payload(payload: Dict[str, Any], limit: int) -> Dict[str, Any]:
+    def _limit_payload(payload: dict[str, Any], limit: int) -> dict[str, Any]:
         return {
             **payload,
             # スライスがコピーを作るので list() で二重に複製しない

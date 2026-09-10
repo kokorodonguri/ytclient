@@ -3,10 +3,10 @@
 import asyncio
 import json
 import re
-from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from application.live_chat_hub import LiveChatHub, RoomCapacityError
 from config import (
     ALLOWED_ORIGIN_REGEX,
     ALLOWED_ORIGINS,
@@ -16,7 +16,6 @@ from config import (
     WS_RATE_LIMIT_MAX_CONNECTIONS,
     logger,
 )
-from application.live_chat_hub import LiveChatHub, RoomCapacityError
 from domain.video import is_valid_youtube_video_id
 from infrastructure.rate_limiter import FixedWindowRateLimiter
 from interfaces.client_identity import client_key
@@ -32,7 +31,7 @@ _allowed_origin_pattern = (
 )
 
 
-def _origin_is_allowed(origin: Optional[str]) -> bool:
+def _origin_is_allowed(origin: str | None) -> bool:
     if not origin:
         # CLI 等の非ブラウザクライアントは Origin を送らない。Origin 検査は
         # 「他サイトのページから勝手に繋がれない」ためのもので、濫用対策では
@@ -59,7 +58,7 @@ async def _authenticate(websocket: WebSocket) -> bool:
         raw = await asyncio.wait_for(
             websocket.receive_text(), timeout=WS_AUTH_TIMEOUT_SECONDS
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await websocket.close(code=1008, reason="Authentication timeout")
         return False
     except WebSocketDisconnect:

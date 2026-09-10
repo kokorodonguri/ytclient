@@ -10,7 +10,7 @@ NOTE: プロセス内シングルトン。uvicorn --workers 2+ では
 import threading
 import time
 from collections import OrderedDict
-from typing import List, NamedTuple, Optional
+from typing import NamedTuple
 
 
 class RateLimitVerdict(NamedTuple):
@@ -25,7 +25,7 @@ class FixedWindowRateLimiter:
         self._max_requests = max_requests
         self._window_seconds = window_seconds
         self._max_keys = max_keys
-        self._hits: "OrderedDict[str, List[float]]" = OrderedDict()
+        self._hits: OrderedDict[str, list[float]] = OrderedDict()
         self._lock = threading.Lock()
 
     def check(self, key: str) -> RateLimitVerdict:
@@ -74,10 +74,10 @@ class TTLCache:
             raise ValueError("cache limits must be positive")
         self._ttl = ttl_seconds
         self._max_entries = max_entries
-        self._store: "OrderedDict[str, tuple]" = OrderedDict()
+        self._store: OrderedDict[str, tuple] = OrderedDict()
         self._lock = threading.Lock()
 
-    def get(self, key: str) -> Optional[dict]:
+    def get(self, key: str) -> dict | None:
         with self._lock:
             entry = self._store.get(key)
             if not entry:

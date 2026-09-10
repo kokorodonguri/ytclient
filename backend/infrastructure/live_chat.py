@@ -4,7 +4,7 @@ pytchat への依存はこのモジュールに閉じる。呼び出し側は
 「チャットを開く / 次のメッセージを取る / 閉じる」だけを扱う。
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 import pytchat
 
@@ -23,7 +23,7 @@ def create_chat(video_id: str) -> Any:
     return pytchat.create(video_id=video_id, interruptable=False)
 
 
-def poll_messages(chat: Any) -> List[Dict[str, Any]]:
+def poll_messages(chat: Any) -> list[dict[str, Any]]:
     """溜まっているメッセージを配信用の形に整えて返す。
 
     ブロッキング呼び出しなので threadpool 経由で使う。

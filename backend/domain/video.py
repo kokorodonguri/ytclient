@@ -5,7 +5,7 @@ yt_dlp が返す雑多な dict を、アプリ内で扱う 1 つの形に落と�
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from config import (
     MEMBER_ONLY_KEYWORDS,
@@ -37,9 +37,9 @@ def is_valid_youtube_channel_id(channel_id: Any) -> bool:
 
 
 def _resolve_timestamp(
-    entry: Dict[str, Any],
+    entry: dict[str, Any],
     video_id: str,
-    published_timestamps: Optional[Dict[str, float]],
+    published_timestamps: dict[str, float] | None,
 ) -> float:
     """公開時刻を決める。
 
@@ -62,7 +62,7 @@ def _resolve_timestamp(
     return float(raw_ts) if raw_ts else 0.0
 
 
-def _live_flags(live_status: str, from_streams_tab: bool) -> Dict[str, bool]:
+def _live_flags(live_status: str, from_streams_tab: bool) -> dict[str, bool]:
     return {
         "is_live": live_status == "is_live",
         "is_upcoming": live_status == "is_upcoming",
@@ -71,7 +71,7 @@ def _live_flags(live_status: str, from_streams_tab: bool) -> Dict[str, bool]:
     }
 
 
-def is_members_only(entry: Dict[str, Any], title: str) -> bool:
+def is_members_only(entry: dict[str, Any], title: str) -> bool:
     """メンバーシップ限定かどうか。
 
     availability が正本だが、extract_flat の一覧では欠けることがある。
@@ -83,11 +83,11 @@ def is_members_only(entry: Dict[str, Any], title: str) -> bool:
 
 
 def build_video_item(
-    entry: Dict[str, Any],
+    entry: dict[str, Any],
     fallback_uploader: str = "",
     from_streams_tab: bool = False,
-    published_timestamps: Optional[Dict[str, float]] = None,
-) -> Optional[Dict[str, Any]]:
+    published_timestamps: dict[str, float] | None = None,
+) -> dict[str, Any] | None:
     """yt_dlp のエントリを 1 件の動画アイテムに変換する。
 
     メンバーシップ限定のものも除外せず is_members_only を立てて返す。
@@ -121,9 +121,9 @@ def build_video_item(
 
 
 def apply_video_detail(
-    item: Dict[str, Any],
-    detail: Dict[str, Any],
-) -> Dict[str, Any]:
+    item: dict[str, Any],
+    detail: dict[str, Any],
+) -> dict[str, Any]:
     """個別取得した詳細で配信状態と公開時刻を上書きした新しいアイテムを返す。"""
     live_status = safe_str(detail.get("live_status")).lower()
     refined = {

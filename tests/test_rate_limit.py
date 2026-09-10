@@ -39,7 +39,8 @@ def test_extraction_endpoints_have_their_own_bucket(make_client):
     client = make_client(VSPO_RATE_LIMIT_PER_MIN=2)
     for _ in range(2):
         # 400 = 上限は通過し、ID 検証で弾かれた
-        assert client.get(f"/api/v1/videos/{INVALID_VIDEO_ID}/comments").status_code == 400
+        response = client.get(f"/api/v1/videos/{INVALID_VIDEO_ID}/comments")
+        assert response.status_code == 400
     assert client.get(f"/api/v1/videos/{INVALID_VIDEO_ID}/comments").status_code == 429
 
 

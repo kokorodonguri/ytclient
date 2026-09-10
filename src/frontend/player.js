@@ -480,12 +480,6 @@ function setupSplitPlayerEventHandlers(videos) {
   });
 }
 
-function escapeHtml(value) {
-  const div = document.createElement('div');
-  div.innerText = value || '';
-  return div.innerHTML;
-}
-
 /**
  * 弾幕トグルボタンのセットアップ
  */

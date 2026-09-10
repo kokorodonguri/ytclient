@@ -15,15 +15,15 @@ YouTube は結合済みの高画質フォーマットを出さないため、108
 """
 
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+from application.comments_service import ServiceBusyError, UpstreamFetchError
 from config import (
     MAX_CONCURRENT_EXTRACTIONS,
     STREAM_CACHE_MAX_ENTRIES,
     STREAM_CACHE_TTL_SECONDS,
     logger,
 )
-from application.comments_service import ServiceBusyError, UpstreamFetchError
 from domain.video import safe_str
 from infrastructure.rate_limiter import TTLCache
 from infrastructure.youtube_scraper import fetch_video_stream_info
@@ -40,7 +40,7 @@ class NoStreamError(Exception):
     """再生できるストリームが見つからない。"""
 
 
-def _http_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _http_formats(info: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         fmt
         for fmt in (info.get("formats") or [])
@@ -48,7 +48,7 @@ def _http_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def _pick_hls_source(info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _pick_hls_source(info: dict[str, Any]) -> dict[str, Any] | None:
     """配信中の HLS を選ぶ。
 
     マスタープレイリストがあればそれを返し、画質の選択は再生側の ABR に任せる。
@@ -69,7 +69,7 @@ def _pick_hls_source(info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"url": best["url"], "height": best.get("height")}
 
 
-def _pick_video_only(formats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _pick_video_only(formats: list[dict[str, Any]]) -> dict[str, Any] | None:
     # 音声トラックを持たない mp4 (H.264) のみ。webm/VP9 は音声との組で
     # コンテナが混ざると扱いが面倒なため避ける。
     candidates = [
@@ -85,7 +85,7 @@ def _pick_video_only(formats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return max(candidates, key=lambda f: ((f.get("height") or 0), (f.get("tbr") or 0)))
 
 
-def _pick_audio_only(formats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _pick_audio_only(formats: list[dict[str, Any]]) -> dict[str, Any] | None:
     candidates = [
         fmt
         for fmt in formats
@@ -98,7 +98,7 @@ def _pick_audio_only(formats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return max(candidates, key=lambda f: (f.get("abr") or 0))
 
 
-def _pick_progressive(formats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _pick_progressive(formats: list[dict[str, Any]]) -> dict[str, Any] | None:
     candidates = [
         fmt
         for fmt in formats
@@ -119,7 +119,7 @@ class StreamService:
         )
         self._semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_EXTRACTIONS)
 
-    def get_stream(self, video_id: str) -> Dict[str, Any]:
+    def get_stream(self, video_id: str) -> dict[str, Any]:
         cached = self._cache.get(video_id)
         if cached is not None:
             return cached

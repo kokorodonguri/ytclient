@@ -133,7 +133,7 @@ async function handleApiResponse(response) {
 
   try {
     return await response.json();
-  } catch (e) {
+  } catch {
     throw new Error("Invalid JSON response from server");
   }
 }
@@ -409,7 +409,7 @@ export async function openExternalUrl(url) {
     let parsedUrl;
     try {
       parsedUrl = new URL(url);
-    } catch (e) {
+    } catch {
       throw new Error("Malformed URL");
     }
 

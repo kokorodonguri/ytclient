@@ -5,12 +5,11 @@ HTTP ヘッダ経由と WebSocket のハンドシェイクメッセージ経由�
 """
 
 import secrets
-from typing import Optional
 
 from config import API_KEY, MAX_API_KEY_LENGTH
 
 
-def api_key_matches(candidate: Optional[str]) -> bool:
+def api_key_matches(candidate: str | None) -> bool:
     """API キーを定数時間で比較する。
 
     `==` は最初に不一致となったバイトで早期終了するため、応答時間の差から
