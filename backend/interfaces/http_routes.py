@@ -21,7 +21,12 @@ from application.stream_service import (
     StreamService,
     UpcomingStreamError,
 )
-from interfaces.deps import enforce_rate_limit, require_api_key, validate_video_id
+from interfaces.deps import (
+    enforce_feed_rate_limit,
+    enforce_rate_limit,
+    require_api_key,
+    validate_video_id,
+)
 
 
 def create_router(
@@ -39,9 +44,12 @@ def create_router(
             "message": "VSPO Client API is running perfectly!",
         }
 
+    # readiness は認証を課さない。外部の死活監視から使えないと意味がなく、
+    # 返すのは件数と劣化状況だけで秘密を含まない。キーを設定した LAN 構成でも
+    # 監視できるよう、ここだけは常に公開する。
     @router.get(
         "/api/v1/readiness",
-        dependencies=[Depends(require_api_key)],
+        dependencies=[Depends(enforce_feed_rate_limit)],
     )
     def read_readiness():
         snapshot = store.readiness_snapshot()
@@ -63,9 +71,17 @@ def create_router(
         )
         return {"status": status, "data": snapshot}
 
-    @router.get("/api/v1/feed", dependencies=[Depends(require_api_key)])
+    # フィードは公開運用（VSPO_API_KEY 未設定）だと誰でも叩けるため、
+    # 認証の有無に関わらずレート制限を課す。以前はキーで守られている前提で
+    # 上限が無く、公開した時点で無制限の帯域消費経路になっていた。
     @router.get(
-        "/api/feed", dependencies=[Depends(require_api_key)], include_in_schema=False
+        "/api/v1/feed",
+        dependencies=[Depends(require_api_key), Depends(enforce_feed_rate_limit)],
+    )
+    @router.get(
+        "/api/feed",
+        dependencies=[Depends(require_api_key), Depends(enforce_feed_rate_limit)],
+        include_in_schema=False,
     )
     def get_feed(if_none_match: Optional[str] = Header(default=None)):
         """事前シリアライズ済みのフィードを返す。

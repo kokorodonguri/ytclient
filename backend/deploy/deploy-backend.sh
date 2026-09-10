@@ -41,16 +41,12 @@ if ! python -c "import main" >/dev/null 2>&1; then
   exit 1
 fi
 
+# 読み取り API は公開で運用する（配信内容は全て公開 YouTube 情報）。
+# 初期配置では VSPO_API_KEY を空のままにし、濫用対策はレート制限に任せる。
+# キーを設定するのは、Cloudflare Tunnel を挟まず LAN へ直接公開する場合など。
 if [ ! -f "$ENV_FILE" ]; then
-  generated_api_key="$(python -c 'import secrets; print(secrets.token_hex(32))')"
-  temporary_env="$(mktemp)"
-  trap 'rm -f "$temporary_env"' EXIT HUP INT TERM
-  sed "s|^VSPO_API_KEY=.*|VSPO_API_KEY=$generated_api_key|" \
-    deploy/vspo-backend.env.example >"$temporary_env"
-  install -m 600 "$temporary_env" "$ENV_FILE"
-  rm -f "$temporary_env"
-  trap - EXIT HUP INT TERM
-  echo "Created $ENV_FILE with a random API key."
+  install -m 600 deploy/vspo-backend.env.example "$ENV_FILE"
+  echo "Created $ENV_FILE (VSPO_API_KEY is empty: public read-only API)."
 fi
 
 python - "$ENV_FILE" <<'PY'
@@ -65,10 +61,17 @@ with open(env_path, encoding="utf-8") as env_file:
             api_key = line.split("=", 1)[1].strip().strip("\"'")
             break
 
+# 空は「公開読み取り API」を意味する正当な設定なので許す。ただし
+# 設定されている場合は、弱い値や短い値をそのまま本番へ通さない。
+if not api_key:
+    print(f"{env_path}: VSPO_API_KEY is empty (public read-only API).")
+    raise SystemExit(0)
+
 weak = {"change-me", "changeme", "replace-me", "secret", "password"}
 if not 32 <= len(api_key) <= 512 or api_key.lower() in weak:
     raise SystemExit(
-        f"{env_path}: VSPO_API_KEY must be a random 32-512 character value"
+        f"{env_path}: VSPO_API_KEY is set but weak. Use a random 32-512 "
+        "character value, or leave it empty for a public read-only API."
     )
 PY
 

@@ -110,8 +110,20 @@ STREAM_CACHE_MAX_ENTRIES = 64
 
 # --- レート制限 ---
 RATE_LIMIT_WINDOW_SECONDS = 60
+# yt-dlp を起動する抽出系（コメント・ストリーム解決）の上限。
 RATE_LIMIT_MAX_REQUESTS = _env_int("VSPO_RATE_LIMIT_PER_MIN", 20, 1, 10000)
-RATE_LIMIT_MAX_CLIENTS = _env_int("VSPO_RATE_LIMIT_MAX_CLIENTS", 4096, 128, 65536)
+# フィード配信は抽出系と別バケットにする。クライアントは is_building 中
+# 5 秒間隔でポーリングするので毎分 12 回に達し、単一バケットだと
+# コメント取得の枠を食い潰して誤爆する。フィードは事前シリアライズ済み
+# + ETag で 1 リクエストが安いため、抽出系より緩くできる。
+FEED_RATE_LIMIT_MAX_REQUESTS = _env_int(
+    "VSPO_FEED_RATE_LIMIT_PER_MIN", 60, 1, 10000
+)
+# 保持するクライアント識別子の最大数。上限に達すると LRU で追い出すため、
+# 追い出された分の制限はリセットされる。読み取りAPIを公開で運用する構成では
+# 同時クライアント数が増えるので、追い出しが常態化しない値にしておく。
+# バケットごとに独立した辞書を持つので、実メモリはこの 2 倍が上限。
+RATE_LIMIT_MAX_CLIENTS = _env_int("VSPO_RATE_LIMIT_MAX_CLIENTS", 16384, 128, 65536)
 WS_RATE_LIMIT_MAX_CONNECTIONS = _env_int(
     "VSPO_WS_CONNECTIONS_PER_MIN", 30, 1, 1000
 )
