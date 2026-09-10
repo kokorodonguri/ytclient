@@ -136,69 +136,8 @@
                         tabindex="-1"
                         aria-labelledby="game-selected-text"
                     >
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-0"
-                            role="option"
-                            aria-selected="true"
-                            data-value=""
-                        >
-                            すべてのゲーム
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-1"
-                            role="option"
-                            aria-selected="false"
-                            data-value="Apex"
-                        >
-                            Apex Legends
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-2"
-                            role="option"
-                            aria-selected="false"
-                            data-value="Valorant"
-                        >
-                            VALORANT
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-3"
-                            role="option"
-                            aria-selected="false"
-                            data-value="スプラ"
-                        >
-                            Splatoon / スプラ
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-4"
-                            role="option"
-                            aria-selected="false"
-                            data-value="Minecraft"
-                        >
-                            Minecraft / マイクラ
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-5"
-                            role="option"
-                            aria-selected="false"
-                            data-value="歌枠"
-                        >
-                            歌枠 / 歌ってみた
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-6"
-                            role="option"
-                            aria-selected="false"
-                            data-value="雑談"
-                        >
-                            雑談
-                        </li>
+                        <!-- 選択肢は constants.js の GAME_FILTERS から
+                             ui.js が生成する（二重管理を避けるため） -->
                     </ul>
                 </div>
 
@@ -216,10 +155,10 @@
                     id="settings-btn"
                     class="icon-control-btn"
                     type="button"
-                    aria-label="&#35373;&#23450;"
-                    title="&#35373;&#23450;"
+                    aria-label="設定"
+                    title="設定"
                 >
-                    <span aria-hidden="true">&#9881;</span>
+                    <span aria-hidden="true">⚙</span>
                 </button>
 
             </div>
@@ -382,19 +321,19 @@
         >
             <div class="settings-panel">
                 <div class="settings-header">
-                    <h2 id="settings-title">&#35373;&#23450;</h2>
+                    <h2 id="settings-title">設定</h2>
                     <button
                         id="settings-close-btn"
                         class="icon-control-btn"
                         type="button"
-                        aria-label="&#35373;&#23450;&#12434;&#38281;&#12376;&#12427;"
+                        aria-label="設定を閉じる"
                     >
                         &times;
                     </button>
                 </div>
                 <form id="settings-form" class="settings-form">
                     <label class="settings-field" for="backend-url-input">
-                        <span>&#12496;&#12483;&#12463;&#12456;&#12531;&#12489;&#12469;&#12540;&#12496;&#12540;</span>
+                        <span>バックエンドサーバー</span>
                         <input
                             id="backend-url-input"
                             type="text"
@@ -410,7 +349,7 @@
                             type="password"
                             autocomplete="off"
                             spellcheck="false"
-                            placeholder="&#26410;&#35373;&#23450;"
+                            placeholder="未設定"
                         />
                     </label>
                     <p id="settings-current-backend" class="settings-current"></p>
@@ -420,14 +359,14 @@
                             class="player-secondary-btn"
                             type="button"
                         >
-                            &#12461;&#12515;&#12531;&#12475;&#12523;
+                            キャンセル
                         </button>
                         <button
                             id="settings-save-btn"
                             class="player-fallback-open-btn"
                             type="submit"
                         >
-                            &#20445;&#23384;&#12375;&#12390;&#25509;&#32154;
+                            保存して接続
                         </button>
                     </div>
                 </form>

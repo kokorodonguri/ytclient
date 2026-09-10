@@ -223,15 +223,3 @@ export const BUTTON_LABELS = {
   SAVE: '保存',
   DELETE: '削除',
 };
-
-export default {
-  API_CONFIG,
-  CHANNELS,
-  GAME_FILTERS,
-  VIDEO_MODES,
-  MODES,
-  UI_CONSTANTS,
-  TIMING,
-  MESSAGES,
-  BUTTON_LABELS,
-};

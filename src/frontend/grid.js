@@ -25,7 +25,7 @@ const MODULE = "GRID";
  * @param {Object} item - ビデオアイテム
  * @returns {string} HTML
  */
-export function buildVideoCardHTML(item, currentUnixSeconds) {
+function buildVideoCardHTML(item, currentUnixSeconds) {
   if (!item || typeof item !== "object") {
     return "";
   }
@@ -114,7 +114,7 @@ export function buildVideoCardHTML(item, currentUnixSeconds) {
  * @param {Object} filters - { channel, game, searchWords }
  * @returns {Array} フィルタリング済みビデオ
  */
-export function filterVideos(videos, filters = {}) {
+function filterVideos(videos, filters = {}) {
   if (!Array.isArray(videos)) {
     return [];
   }
@@ -183,7 +183,7 @@ export function filterVideos(videos, filters = {}) {
  * @param {Array} videos - ビデオリスト
  * @returns {Array} ソート済みビデオ
  */
-export function sortVideos(videos) {
+function sortVideos(videos) {
   if (!Array.isArray(videos)) {
     return [];
   }
@@ -518,89 +518,6 @@ function renderEmptyState(container) {
   `;
 }
 
-/**
- * 空のグリッドを表示
- * @param {Object} dom - DOM操作オブジェクト
- * @param {string} mode - 'official' または 'clips'
- * @param {string} message - 表示メッセージ
- */
-export function renderEmptyGrid(dom, mode, message = MESSAGES.INFO.NO_VIDEOS) {
-  const container = dom.getGridContainer(mode);
-  if (container) {
-    container.innerHTML = `<p class="message-card">${escapeHTML(message)}</p>`;
-  }
-}
 
-/**
- * ローディング状態を表示
- * @param {Object} dom - DOM操作オブジェクト
- * @param {string} mode - 'official' または 'clips'
- */
-export function renderLoadingGrid(dom, mode) {
-  const container = dom.getGridContainer(mode);
-  if (container) {
-    container.innerHTML = `
-      <div class="loading-state">
-        <div class="spinner"></div>
-        <p class="loading-title">${MESSAGES.INFO.LOADING}</p>
-      </div>
-    `;
-  }
-}
 
-/**
- * エラー状態を表示
- * @param {Object} dom - DOM操作オブジェクト
- * @param {string} mode - 'official' または 'clips'
- * @param {string} message - エラーメッセージ
- */
-export function renderErrorGrid(
-  dom,
-  mode,
-  message = MESSAGES.ERROR.FAILED_RENDER,
-) {
-  const container = dom.getGridContainer(mode);
-  if (container) {
-    container.innerHTML = `
-      <p class="message-card error">${escapeHTML(message)}</p>
-    `;
-  }
-}
 
-/**
- * スケルトンローダーを表示
- * @param {Object} dom - DOM操作オブジェクト
- * @param {string} mode - 'official' または 'clips'
- * @param {number} count - スケルトン数
- */
-export function renderSkeletonGrid(dom, mode, count = 4) {
-  const container = dom.getGridContainer(mode);
-  if (!container) return;
-
-  let skeletons = "";
-  for (let i = 0; i < count; i++) {
-    skeletons += `
-      <article class="video-card-skeleton">
-        <div class="skeleton-thumbnail"></div>
-        <div class="skeleton-info">
-          <div class="skeleton-title"></div>
-          <div class="skeleton-channel"></div>
-        </div>
-      </article>
-    `;
-  }
-
-  container.innerHTML = skeletons;
-}
-
-export default {
-  buildVideoCardHTML,
-  filterVideos,
-  sortVideos,
-  renderGrid,
-  renderEmptyGrid,
-  renderLoadingGrid,
-  renderErrorGrid,
-  renderSkeletonGrid,
-  formatRelativeTime,
-};

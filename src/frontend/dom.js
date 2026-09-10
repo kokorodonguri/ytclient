@@ -162,12 +162,6 @@ export function closeSidebar() {
   toggleSidebar(false);
 }
 
-/**
- * サイドバーを開く
- */
-export function openSidebar() {
-  toggleSidebar(true);
-}
 
 /**
  * サイドバーの選択チャンネルテキストを更新
@@ -305,6 +299,31 @@ export function updateFeedStatus({ status = "loading", label, summary }) {
   if (feedSummary) {
     feedSummary.textContent = summary || "";
   }
+}
+
+/**
+ * 一覧に戻ったとき、元のビデオカードへフォーカスを戻す
+ * @param {string} videoId
+ */
+export function restoreFocusToCard(videoId) {
+  // 有効なフォーカスが別の場所にあるとき（例: タブ切替時）は奪わない
+  const active = document.activeElement;
+  const playerView = getDOM("playerView");
+  if (
+    active &&
+    active !== document.body &&
+    !(playerView && playerView.contains(active))
+  ) {
+    return;
+  }
+
+  let target = null;
+  if (videoId && typeof CSS !== "undefined" && CSS.escape) {
+    target = document.querySelector(
+      `.video-card[data-video-id="${CSS.escape(videoId)}"]`,
+    );
+  }
+  (target || getDOM("mainContent"))?.focus();
 }
 
 /**
@@ -487,28 +506,3 @@ export function showToast(
 export function showErrorToast(message) {
   showToast(message, "error");
 }
-
-export default {
-  initDomCache,
-  getDOM,
-  toggleSidebar,
-  closeSidebar,
-  openSidebar,
-  isSidebarOpen,
-  updateSidebarSelectedChannel,
-  setTabActive,
-  toggleGameOptions,
-  closeAllDropdowns,
-  updateGameSelectedText,
-  updateFeedStatus,
-  getGridContainer,
-  showPlayer,
-  hidePlayer,
-  updatePlayerVideoTitle,
-  setPlayerHTML,
-  setPlaybackCleanup,
-  showDescriptionContainer,
-  hideDescriptionContainer,
-  showToast,
-  showErrorToast,
-};

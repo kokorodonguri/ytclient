@@ -17,12 +17,11 @@ import {
   initApiCredentials,
   testApiConnection,
 } from "./api.js";
-import { initializeUI } from "./ui.js";
-import { renderGrid } from "./grid.js";
+import { initializeUI, renderCurrentGrid } from "./ui.js";
 import { readCachedFeed, writeCachedFeed } from "./feedCache.js";
 import { playVideo } from "./player.js";
 import { log, logError } from "./utils.js";
-import { MODES, MESSAGES, TIMING } from "./constants.js";
+import { MESSAGES, TIMING } from "./constants.js";
 
 const MODULE = "RENDERER";
 
@@ -71,7 +70,7 @@ function hydrateFromCache() {
     last_error: null,
   });
   showingCachedFeed = true;
-  renderGridWithState();
+  renderCurrentGrid();
   updateFeedStatus({
     status: "loading",
     label: "更新中",
@@ -247,7 +246,7 @@ async function loadAndRenderFeed() {
     showingCachedFeed = false;
 
     // グリッドをレンダリング
-    renderGridWithState();
+    renderCurrentGrid();
 
     // 収集が完了した状態だけ保存する。is_building 中は不完全な一覧なので、
     // それを次回の起動時に見せると「メンバーが減った」ように見える。
@@ -285,36 +284,6 @@ async function loadAndRenderFeed() {
     scheduleNextFeedRefresh(nextBackoffDelay());
   } finally {
     isFeedLoading = false;
-  }
-}
-
-/**
- * グリッドを再レンダリング（状態を使用）
- */
-function renderGridWithState() {
-  try {
-    const container =
-      state.currentMode === MODES.OFFICIAL
-        ? getDOM("officialContainer")
-        : getDOM("clipsContainer");
-
-    if (!container) {
-      throw new Error("Grid container not found");
-    }
-
-    // グリッドレンダリング
-    renderGrid(state, {
-      getGridContainer: (mode) =>
-        mode === MODES.OFFICIAL
-          ? getDOM("officialContainer")
-          : getDOM("clipsContainer"),
-      getDOM,
-    });
-
-    log(MODULE, "Grid rendered successfully");
-  } catch (error) {
-    logError(MODULE, "Grid render error", error);
-    showErrorToast(MESSAGES.ERROR.FAILED_RENDER);
   }
 }
 

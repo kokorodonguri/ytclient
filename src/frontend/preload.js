@@ -104,45 +104,6 @@ const exposedAPI = {
     }
   },
 
-  /**
-   * Get application version
-   * @returns {Promise<string>}
-   */
-  getAppVersion: async () => {
-    try {
-      const version = await ipcRenderer.invoke("app:get-version");
-      if (!isValidString(version, 1, 20)) {
-        throw new Error("Invalid version format");
-      }
-      return version;
-    } catch (error) {
-      secureLog("error", "Failed to get app version", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
-  },
-
-  /**
-   * Get application platform
-   * @returns {Promise<string>}
-   */
-  getPlatform: async () => {
-    try {
-      const platform = await ipcRenderer.invoke("app:get-platform");
-      const validPlatforms = ["win32", "darwin", "linux"];
-      if (!validPlatforms.includes(platform)) {
-        throw new Error("Invalid platform");
-      }
-      return platform;
-    } catch (error) {
-      secureLog("error", "Failed to get platform", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
-  },
-
   getBackendConfig: async () => {
     try {
       return await ipcRenderer.invoke("app:get-backend-config");
@@ -178,33 +139,6 @@ const exposedAPI = {
     }
   },
 
-  /**
-   * Safe logger for renderer process
-   */
-  logger: {
-    info: (message, data) => {
-      secureLog("info", message, data);
-    },
-    warn: (message, data) => {
-      secureLog("warn", message, data);
-    },
-    error: (message, data) => {
-      secureLog("error", message, data);
-    },
-    debug: (message, data) => {
-      secureLog("debug", message, data);
-    },
-  },
-
-  /**
-   * Get renderer process ID (for debugging)
-   */
-  getProcessId: () => process.pid,
-
-  /**
-   * Check if running in development
-   */
-  isDevelopment: () => process.env.NODE_ENV === "development",
 };
 
 /**

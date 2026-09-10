@@ -107,13 +107,3 @@ export function writeCachedFeed(feedData) {
   }
 }
 
-/**
- * 保存済みフィードを消す
- */
-export function clearCachedFeed() {
-  try {
-    localStorage.removeItem(FEED_CACHE_STORAGE_KEY);
-  } catch (error) {
-    logError(MODULE, "Failed to clear the cached feed", error);
-  }
-}

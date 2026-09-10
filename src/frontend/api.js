@@ -462,54 +462,10 @@ export function getYouTubeWatchUrl(videoId) {
   return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
 }
 
-/**
- * YouTube チャンネルURLを生成
- * @param {string} channelUrl - チャンネルURL
- * @returns {string}
- */
-export function getYouTubeChannelUrl(channelUrl) {
-  if (!channelUrl) return "";
-  return channelUrl;
-}
 
 /**
  * ========================================
  * デバッグ・ログ
  * ======================================== */
 
-/**
- * API設定を取得
- * @returns {Object}
- */
-export function getApiConfig() {
-  return { ...API_CONFIG };
-}
 
-/**
- * API状態をログ出力
- */
-export function logApiStatus() {
-  log(MODULE, "API Config:", {
-    baseUrl: API_CONFIG.BASE_URL,
-    timeout: API_CONFIG.TIMEOUT,
-    endpoints: API_CONFIG.ENDPOINTS,
-  });
-}
-
-export default {
-  initApiCredentials,
-  fetchFeed,
-  fetchVideoComments,
-  fetchVideoDescription,
-  createLiveChatWebSocket,
-  closeWebSocket,
-  testApiConnection,
-  openExternalUrl,
-  fetchVideoStream,
-  getYouTubeEmbedUrl,
-  getYouTubeWatchUrl,
-  getYouTubeChannelUrl,
-  getErrorMessage,
-  getApiConfig,
-  logApiStatus,
-};

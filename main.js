@@ -454,8 +454,6 @@ function installIpcHandlersOnce() {
     }
   });
 
-  ipcMain.handle("app:get-version", () => app.getVersion());
-  ipcMain.handle("app:get-platform", () => process.platform);
   ipcMain.handle("app:get-backend-config", () => ({
     ok: true,
     config: {

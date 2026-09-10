@@ -12,6 +12,7 @@ import {
   showDescriptionContainer,
   hideDescriptionContainer,
   setPlaybackCleanup,
+  restoreFocusToCard,
 } from './dom.js';
 import {
   openExternalUrl,
@@ -23,7 +24,6 @@ import {
   fetchVideoStream,
 } from './api.js';
 import state from './state.js';
-import { restoreFocusToCard } from './ui.js';
 import { escapeAttribute, escapeHTML } from './utils.js';
 
 let activeHlsInstances = [];
@@ -63,7 +63,7 @@ function destroyActivePlayback() {
 
   // プレイヤー DOM を捨てるときは高さ追従も必ず外す。ここに置けば
   // setPlayerHTML / clearPlayerContainer のどちらの経路からも確実に走るため、
-  // ui.js と player.js で closePlayer が分かれていても取りこぼさない
+  // closePlayer は player.js の 1 本だけ（以前は ui.js にも別実装があった）
   stopChromeHeightTracking();
 }
 
@@ -116,7 +116,7 @@ function stopChromeHeightTracking() {
   document.documentElement.style.removeProperty('--player-chrome-h');
 }
 
-export async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
+async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
   if (!videoId || typeof videoId !== 'string') {
     console.error('Invalid video ID');
     showToast('ビデオIDが無効です。');
@@ -306,7 +306,7 @@ function generateSplitPlayerHTML(primaryVideo, secondaryVideo) {
   `;
 }
 
-export async function renderSplitPlayer(primaryVideo, secondaryVideo) {
+async function renderSplitPlayer(primaryVideo, secondaryVideo) {
   if (!primaryVideo?.videoId || !secondaryVideo?.videoId) {
     showToast('2画面表示に必要な動画が不足しています。');
     return;
@@ -755,19 +755,11 @@ export function closePlayer() {
   const lastVideoId = state.currentPlayerVideos?.[0]?.videoId || '';
 
   // 以前はここで DOM 操作を手書きしていたため、clearPlayerContainer() を通らず
-  // 再生の後始末 (runPlaybackCleanup) を飛ばしていた。ui.js 側の closePlayer と
-  // 挙動が割れる原因にもなっていたので、dom.js の hidePlayer に一本化する
+  // 再生の後始末 (runPlaybackCleanup) を飛ばしていた。dom.js の hidePlayer に
+  // 一本化してある。ui.js にもう 1 つあった closePlayer はこれに統合した。
   hidePlayer(state.currentMode);
   state.setCurrentPlayerVideos([]);
 
   // 再生前に選択していたカードへフォーカスを戻す
   restoreFocusToCard(lastVideoId);
 }
-
-export default {
-  renderPlayer,
-  playVideo,
-  renderSplitPlayer,
-  closePlayer,
-  setupLiveChat,
-};

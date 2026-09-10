@@ -16,10 +16,10 @@ import {
   closeAllDropdowns,
   updateGameSelectedText,
   updateSidebarSelectedChannel,
-  hidePlayer,
   showToast,
 } from "./dom.js";
 import { renderGrid } from "./grid.js";
+import { closePlayer } from "./player.js";
 import {
   log,
   logError,
@@ -47,7 +47,7 @@ const MODULE = "UI";
  * サイドバー初期化
  * ======================================== */
 
-export function initializeSidebar() {
+function initializeSidebar() {
   log(MODULE, "Initializing sidebar...");
 
   const hamburgerBtn = getDOM("hamburgerBtn");
@@ -107,13 +107,28 @@ export function initializeSidebar() {
  * ゲームドロップダウン初期化
  * ======================================== */
 
-export function initializeGameDropdown() {
+function initializeGameDropdown() {
   log(MODULE, "Initializing game dropdown...");
 
   const gameSelectedText = getDOM("gameSelectedText");
   const gameOptions = getDOM("gameOptions");
 
   if (!gameSelectedText || !gameOptions) return;
+
+  // 選択肢の正本は GAME_FILTERS。index.html にも同じ 7 件を書いていたため、
+  // 片方だけ編集すると黙って乖離した（チャンネル一覧には
+  // scripts/check-syntax.mjs の parity 検査があるが、これには無い）。
+  gameOptions.innerHTML = "";
+  GAME_FILTERS.forEach((filter, index) => {
+    const option = document.createElement("li");
+    option.className = "dropdown-item";
+    option.id = `game-opt-${index}`;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === 0));
+    option.dataset.value = filter.value;
+    option.textContent = filter.label;
+    gameOptions.appendChild(option);
+  });
 
   const items = Array.from(gameOptions.querySelectorAll(".dropdown-item"));
   let activeIndex = 0;
@@ -221,7 +236,7 @@ export function initializeGameDropdown() {
  * タブボタン初期化
  * ======================================== */
 
-export function initializeTabButtons() {
+function initializeTabButtons() {
   log(MODULE, "Initializing tab buttons...");
 
   const tabOfficial = getDOM("tabOfficial");
@@ -265,7 +280,7 @@ export function initializeTabButtons() {
  * グローバルハンドラー初期化
  * ======================================== */
 
-export function initializeGlobalHandlers() {
+function initializeGlobalHandlers() {
   log(MODULE, "Initializing global handlers...");
 
   const refreshBtn = getDOM("refreshBtn");
@@ -353,7 +368,7 @@ export function initializeGlobalHandlers() {
   log(MODULE, "Global handlers initialized");
 }
 
-export function initializeSettingsDialog() {
+function initializeSettingsDialog() {
   const modal = getDOM("settingsModal");
   const form = getDOM("settingsForm");
   const closeBtn = getDOM("settingsCloseBtn");
@@ -512,7 +527,7 @@ async function saveSettings() {
  * バックボタン初期化
  * ======================================== */
 
-export function initializeBackButton() {
+function initializeBackButton() {
   log(MODULE, "Initializing back button...");
 
   // 戻るボタンは操作列の中に毎回描き直されるため、常設の #player-container に
@@ -606,7 +621,14 @@ function getGridContainerWrapper(mode) {
     : getDOM("clipsContainer");
 }
 
-function renderCurrentGrid() {
+/**
+ * 現在の状態でグリッドを描き直す
+ *
+ * 以前は renderer.js の renderGridWithState がほぼ同じことをしていた。
+ * renderGrid 自体がコンテナ不在と描画失敗を扱う（グリッド内にメッセージを
+ * 出す）ので、呼び出し側で包み直す層は要らない。
+ */
+export function renderCurrentGrid() {
   renderGrid(state, { getGridContainer: getGridContainerWrapper, getDOM });
 }
 
@@ -633,56 +655,6 @@ function syncSidebarActiveChannel(value) {
  * ========================================
  * プレイヤー操作
  * ======================================== */
-
-/**
- * プレイヤーを閉じる
- */
-export function closePlayer() {
-  log(MODULE, "Closing player...");
-
-  // WebSocketをクローズ
-  if (state.activeChatSocket) {
-    try {
-      state.activeChatSocket.close();
-    } catch (e) {
-      logError(MODULE, "Error closing WebSocket", e);
-    }
-    state.activeChatSocket = null;
-  }
-
-  // UIを更新
-  const lastVideoId = state.currentPlayerVideos?.[0]?.videoId || "";
-  hidePlayer(state.currentMode);
-  state.setCurrentPlayerVideos([]);
-
-  // 再生前に選択していたカードへフォーカスを戻す
-  restoreFocusToCard(lastVideoId);
-}
-
-/**
- * 一覧に戻ったとき、元のビデオカードへフォーカスを戻す
- * @param {string} videoId
- */
-export function restoreFocusToCard(videoId) {
-  // 有効なフォーカスが別の場所にあるとき（例: タブ切替時）は奪わない
-  const active = document.activeElement;
-  const playerView = getDOM("playerView");
-  if (
-    active &&
-    active !== document.body &&
-    !(playerView && playerView.contains(active))
-  ) {
-    return;
-  }
-
-  let target = null;
-  if (videoId && typeof CSS !== "undefined" && CSS.escape) {
-    target = document.querySelector(
-      `.video-card[data-video-id="${CSS.escape(videoId)}"]`,
-    );
-  }
-  (target || getDOM("mainContent"))?.focus();
-}
 
 /**
  * ========================================
@@ -728,33 +700,4 @@ export function initializeUI() {
  * ユーティリティ関数
  * ======================================== */
 
-/**
- * チャンネル情報を取得
- * @returns {Array} チャンネル配列
- */
-export function getTargetChannels() {
-  return CHANNELS.MEMBERS;
-}
 
-/**
- * ゲームフィルターオプションを取得
- * @returns {Array} ゲームオプション配列
- */
-export function getGameFilterOptions() {
-  return GAME_FILTERS;
-}
-
-export default {
-  initializeUI,
-  initializeSidebar,
-  initializeGameDropdown,
-  initializeTabButtons,
-  initializeGlobalHandlers,
-  initializeSettingsDialog,
-  initializeBackButton,
-  setSelectedChannel,
-  setMode,
-  closePlayer,
-  getTargetChannels,
-  getGameFilterOptions,
-};
