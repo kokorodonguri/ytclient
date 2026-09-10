@@ -32,6 +32,18 @@ DEFAULT_ALLOWED_ORIGINS = [
 ]
 
 
+# 設定不備は再起動しても直らない。RuntimeError を投げると systemd の
+# Restart=always + RestartSec=5 で生 traceback を吐きながら無限に再起動し、
+# 本当の原因がログの奔流に埋もれる。EX_CONFIG(78) で 1 行だけ残して止まり、
+# unit 側の RestartPreventExitStatus=78 が再起動を抑える。
+EXIT_CONFIG_ERROR = 78
+
+
+def _config_error(message: str) -> "SystemExit":
+    print(f"Configuration error: {message}", file=sys.stderr)
+    return SystemExit(EXIT_CONFIG_ERROR)
+
+
 def _split_env_list(name: str, default: List[str]) -> List[str]:
     raw_value = os.environ.get(name, "").strip()
     if not raw_value:
@@ -53,10 +65,14 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     raw_value = os.environ.get(name, str(default)).strip()
     try:
         value = int(raw_value)
-    except ValueError as error:
-        raise RuntimeError(f"{name} must be an integer") from error
+    except ValueError:
+        raise _config_error(
+            f"{name} must be an integer, got {raw_value!r}"
+        ) from None
     if not minimum <= value <= maximum:
-        raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+        raise _config_error(
+            f"{name} must be between {minimum} and {maximum}, got {value}"
+        )
     return value
 
 
@@ -69,7 +85,9 @@ def _env_bool(name: str, default: bool = False) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise RuntimeError(f"{name} must be a boolean")
+    raise _config_error(
+        f"{name} must be one of 1/0/true/false/yes/no/on/off, got {raw_value!r}"
+    )
 
 # --- 収集ワーカー ---
 BACKGROUND_REFRESH_SECONDS = _env_int("VSPO_REFRESH_SECONDS", 600, 30, 86400)
@@ -77,6 +95,17 @@ NEW_VIDEO_DISCOVERY_SECONDS = _env_int(
     "VSPO_DISCOVERY_SECONDS", 60, 30, 3600
 )
 INITIAL_REFRESH_DELAY_SECONDS = 2
+# 1 周期の実時間上限。yt-dlp の socket_timeout はソケット読み取り 1 回ぶんしか
+# 縛らないため、抽出が 1 件詰まると収集スレッドが無期限に止まる。フィードは
+# エラーも出さずに更新されなくなり、readiness も気付けない。締切を過ぎた
+# 取得は捨てて周期を閉じ、次の周期へ進む。
+BACKGROUND_CYCLE_TIMEOUT_SECONDS = _env_int(
+    "VSPO_CYCLE_TIMEOUT_SECONDS", 900, 60, 7200
+)
+# RSS 探索は既定 60 秒周期なので、完全更新より短い締切にする。
+DISCOVERY_CYCLE_TIMEOUT_SECONDS = _env_int(
+    "VSPO_DISCOVERY_TIMEOUT_SECONDS", 120, 30, 3600
+)
 STREAM_DETAIL_LIMIT_PER_CHANNEL = _env_int(
     "VSPO_STREAM_DETAIL_LIMIT_PER_CHANNEL", 0, 0, 20
 )
@@ -87,6 +116,9 @@ CHANNEL_FETCH_WORKERS = 6
 # 出たりする。逆に無期限に保持すると、削除・非公開化された動画が毎周期
 # フィードへ戻り続ける。フル更新 2 周期ぶんを上限にして両方を防ぐ。
 DISCOVERY_OVERLAY_TTL_SECONDS = max(2 * BACKGROUND_REFRESH_SECONDS, 1800)
+# readiness が ready を返し続けてよいフィードの古さの上限。完全更新 3 周期を
+# 過ぎても更新されていなければ、収集が止まっているとみなして 503 を返す。
+READINESS_MAX_FEED_AGE_SECONDS = max(3 * BACKGROUND_REFRESH_SECONDS, 900)
 
 # --- コメント取得 ---
 MAX_COMMENTS_LIMIT = 100
@@ -152,8 +184,10 @@ def _parse_networks(name: str, default: List[str]) -> list:
     for item in raw:
         try:
             networks.append(ipaddress.ip_network(item, strict=False))
-        except ValueError as error:
-            raise RuntimeError(f"{name} contains an invalid CIDR: {item}") from error
+        except ValueError:
+            raise _config_error(
+                f"{name} contains an invalid CIDR: {item!r}"
+            ) from None
     return networks
 
 
@@ -227,7 +261,12 @@ FEED_CACHE_PATH: Optional[Path] = (
 
 
 def configure_logging() -> logging.Logger:
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    # 時刻とロガー名を入れる。journald は時刻を付けるが、PyInstaller 版が
+    # ファイルへ吐くログや docker logs では書式側に無いと追跡できない。
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     # httpx logs full request URLs at INFO, including query-string credentials
     # used by upstream services. Keep application lifecycle logs while ensuring
     # those values never land in production journals.
@@ -248,7 +287,8 @@ def validate_security_config() -> None:
         or len(API_KEY) > MAX_API_KEY_LENGTH
         or API_KEY.lower() in WEAK_API_KEYS
     ):
-        raise SystemExit(
-            "VSPO_API_KEY must be a random value between "
-            f"{MIN_API_KEY_LENGTH} and {MAX_API_KEY_LENGTH} characters."
+        raise _config_error(
+            "VSPO_API_KEY is set but weak. Use a random value between "
+            f"{MIN_API_KEY_LENGTH} and {MAX_API_KEY_LENGTH} characters, "
+            "or leave it empty for a public read-only API."
         )

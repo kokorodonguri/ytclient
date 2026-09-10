@@ -82,12 +82,20 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def generic_exception_handler(request: Request, exc: Exception):
-        logger.exception("Unhandled API error")
+        # request_id をログに載せないと、利用者が持っている X-Request-ID から
+        # 該当のスタックトレースを引けない。返すだけでは相関が取れない。
+        request_id = request_id_of(request)
+        logger.exception(
+            "Unhandled API error [request_id=%s] %s %s",
+            request_id,
+            request.method,
+            request.url.path,
+        )
         return JSONResponse(
             status_code=500,
             content=error_payload(
                 "INTERNAL_ERROR",
                 "Internal server error",
-                request_id_of(request),
+                request_id,
             ),
         )

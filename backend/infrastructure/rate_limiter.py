@@ -10,7 +10,7 @@ NOTE: プロセス内シングルトン。uvicorn --workers 2+ では
 import threading
 import time
 from collections import OrderedDict
-from typing import Dict, List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional
 
 
 class RateLimitVerdict(NamedTuple):
@@ -64,11 +64,6 @@ class FixedWindowRateLimiter:
             hits.append(now)
 
         return RateLimitVerdict(True, 0)
-
-    @property
-    def key_count(self) -> int:
-        with self._lock:
-            return len(self._hits)
 
 
 class TTLCache:

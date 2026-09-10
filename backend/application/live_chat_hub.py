@@ -249,7 +249,3 @@ class LiveChatHub:
                 tasks.append(room.task)
         if tasks:
             await self._finish_room_tasks(tasks)
-
-    @property
-    def room_count(self) -> int:
-        return len(self._rooms)

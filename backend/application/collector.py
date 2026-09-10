@@ -7,11 +7,14 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Set, Tuple
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from config import (
+    BACKGROUND_CYCLE_TIMEOUT_SECONDS,
     BACKGROUND_REFRESH_SECONDS,
     CHANNEL_FETCH_WORKERS,
+    DISCOVERY_CYCLE_TIMEOUT_SECONDS,
     DISCOVERY_OVERLAY_TTL_SECONDS,
     INITIAL_REFRESH_DELAY_SECONDS,
     NEW_VIDEO_DISCOVERY_SECONDS,
@@ -39,6 +42,52 @@ from infrastructure.youtube_scraper import (
 )
 
 _MAX_DISCOVERY_OVERLAY_ITEMS = 1024
+
+
+def _run_bounded(
+    function: Callable[[Any], Any],
+    inputs: Iterable[Any],
+    max_workers: int,
+    deadline: float,
+    label: str,
+    on_failure: Optional[Callable[[Any, Optional[BaseException]], None]] = None,
+) -> List[Any]:
+    """並列実行し、締切内に返ったぶんだけを返す。
+
+    executor.map には timeout が無い。yt-dlp の socket_timeout はソケット
+    読み取り 1 回ぶんしか縛らないので、抽出が 1 件詰まると収集スレッドが
+    無期限に止まる。フィードはエラーも出さずに更新されなくなる。
+
+    ThreadPoolExecutor を with で囲まないのは、退出時の shutdown(wait=True)
+    が詰まったタスクを待ってしまい、締切を設けた意味が無くなるため。
+    cancel_futures=True で未開始ぶんを捨て、実行中のものは置いて先へ進む。
+    """
+    items = list(inputs)
+    if not items:
+        return []
+
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    results: List[Any] = []
+    try:
+        futures = [(executor.submit(function, item), item) for item in items]
+        for future, item in futures:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                results.append(future.result(timeout=remaining))
+            except FuturesTimeoutError:
+                logger.warning("%s timed out, skipped: %s", label, item)
+                future.cancel()
+                if on_failure is not None:
+                    on_failure(item, None)
+            except Exception as error:
+                logger.warning(
+                    "%s failed (%s): %s", label, type(error).__name__, error
+                )
+                if on_failure is not None:
+                    on_failure(item, error)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return results
 
 
 class FeedCollector:
@@ -144,36 +193,51 @@ class FeedCollector:
 
         return resolved_channel_id, result_items
 
-    def _collect_official(self) -> List[Dict[str, Any]]:
+    def _collect_official(self, deadline: float) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=CHANNEL_FETCH_WORKERS) as executor:
-            for channel_id, channel_items in executor.map(
-                self._collect_channel, TARGET_CHANNELS
-            ):
-                if is_valid_youtube_channel_id(channel_id):
-                    with self._channel_ids_lock:
-                        self._channel_ids.add(channel_id)
-                items.extend(channel_items)
+
+        def record_failure(_channel_url: Any, _error: Any) -> None:
+            # 締切超過・例外でチャンネルが 1 つ落ちると、そのメンバーの動画が
+            # フィードから丸ごと消える。劣化として数えないと degraded_channels が
+            # 0 のまま「一部のメンバーしか出てこないフィード」を正常扱いしてしまう。
+            self._store.record_channel_failure(complete_failure=True)
+
+        for channel_id, channel_items in _run_bounded(
+            self._collect_channel,
+            TARGET_CHANNELS,
+            max_workers=CHANNEL_FETCH_WORKERS,
+            deadline=deadline,
+            label="Channel fetch",
+            on_failure=record_failure,
+        ):
+            if is_valid_youtube_channel_id(channel_id):
+                with self._channel_ids_lock:
+                    self._channel_ids.add(channel_id)
+            items.extend(channel_items)
         return items
 
     @staticmethod
-    def _collect_clips() -> List[Dict[str, Any]]:
+    def _collect_clips(deadline: float) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         if not CLIP_QUERIES:
             return items
         # 1 クエリが ytsearch30 で数秒かかる。直列だとクエリ数ぶん
         # 完全更新の所要時間が伸びるだけなので並列で回す。
-        # executor.map は入力順に返すため、重複排除の先勝ちは変わらない。
-        with ThreadPoolExecutor(max_workers=len(CLIP_QUERIES)) as executor:
-            for query_items in executor.map(
-                lambda query: search_videos(query, limit=30), CLIP_QUERIES
-            ):
-                items.extend(query_items)
+        # 投入順に結果を待つため、重複排除の先勝ちは変わらない。
+        for query_items in _run_bounded(
+            lambda query: search_videos(query, limit=30),
+            CLIP_QUERIES,
+            max_workers=len(CLIP_QUERIES),
+            deadline=deadline,
+            label="Clip search",
+        ):
+            items.extend(query_items)
         return items
 
     @staticmethod
     def _refine_stream_details(
         items: List[Dict[str, Any]],
+        deadline: float,
     ) -> List[Dict[str, Any]]:
         """配信タブ由来の直近動画だけ個別取得して配信状態を確定させる。
 
@@ -200,14 +264,16 @@ class FeedCollector:
             return items
 
         detail_by_id: Dict[str, Dict[str, Any]] = {}
-        with ThreadPoolExecutor(max_workers=STREAM_DETAIL_WORKERS) as executor:
-            for detail in executor.map(
-                lambda item: fetch_video_detail(safe_str(item.get("video_id")).strip()),
-                candidates,
-            ):
-                video_id = safe_str(detail.get("id")).strip()
-                if video_id:
-                    detail_by_id[video_id] = detail
+        for detail in _run_bounded(
+            lambda item: fetch_video_detail(safe_str(item.get("video_id")).strip()),
+            candidates,
+            max_workers=STREAM_DETAIL_WORKERS,
+            deadline=deadline,
+            label="Stream detail fetch",
+        ):
+            video_id = safe_str(detail.get("id")).strip()
+            if video_id:
+                detail_by_id[video_id] = detail
 
         refined = []
         for item in items:
@@ -321,27 +387,35 @@ class FeedCollector:
         }
         seen_rss_items: List[Dict[str, Any]] = []
         candidates_by_id: Dict[str, Dict[str, Any]] = {}
-        with ThreadPoolExecutor(max_workers=CHANNEL_FETCH_WORKERS) as executor:
-            for feed_items in executor.map(load_recent_video_items, channel_ids):
-                for item in feed_items:
-                    video_id = safe_str(item.get("video_id")).strip()
-                    if video_id in current_by_id:
-                        seen_rss_items.append(current_by_id[video_id])
-                    elif video_id:
-                        candidates_by_id.setdefault(video_id, item)
+        deadline = time.monotonic() + DISCOVERY_CYCLE_TIMEOUT_SECONDS
+        for feed_items in _run_bounded(
+            load_recent_video_items,
+            channel_ids,
+            max_workers=CHANNEL_FETCH_WORKERS,
+            deadline=deadline,
+            label="RSS fetch",
+        ):
+            for item in feed_items:
+                video_id = safe_str(item.get("video_id")).strip()
+                if video_id in current_by_id:
+                    seen_rss_items.append(current_by_id[video_id])
+                elif video_id:
+                    candidates_by_id.setdefault(video_id, item)
 
         self._remember_discovery_items(seen_rss_items)
         if not candidates_by_id:
             return 0
 
         refined: List[Dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=STREAM_DETAIL_WORKERS) as executor:
-            for item in executor.map(
-                self._refine_discovered_item,
-                candidates_by_id.values(),
-            ):
-                if item:
-                    refined.append(item)
+        for item in _run_bounded(
+            self._refine_discovered_item,
+            candidates_by_id.values(),
+            max_workers=STREAM_DETAIL_WORKERS,
+            deadline=deadline,
+            label="Discovered video detail fetch",
+        ):
+            if item:
+                refined.append(item)
 
         self._remember_discovery_items(refined)
         added = self._store.merge_official(refined)
@@ -363,15 +437,18 @@ class FeedCollector:
         """動画・配信・切り抜きを再取得し、成功可否を返す。"""
         self._store.set_building(True)
         self._store.reset_failures()
+        # 周期全体で 1 本の締切を共有する。段階ごとに引き直すと、各段階が
+        # 上限まで粘って周期の総時間が上限 × 段数まで伸びてしまう。
+        deadline = time.monotonic() + BACKGROUND_CYCLE_TIMEOUT_SECONDS
         try:
-            official = self._collect_official()
-            clips = self._collect_clips()
+            official = self._collect_official(deadline)
+            clips = self._collect_clips(deadline)
 
             # 先に粗いデータを見せてから、詳細で上書きする
             self._store.replace(official, clips, is_building=True)
             self._merge_discovery_overlay()
 
-            refined = self._refine_stream_details(official)
+            refined = self._refine_stream_details(official, deadline)
             self._store.replace(refined, clips)
             # 一覧に載っている項目は正本が持っているので overlay から外す。
             # 残るのは「RSS には出たが一覧がまだ追いついていない」項目だけで、

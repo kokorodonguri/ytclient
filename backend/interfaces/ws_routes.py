@@ -34,7 +34,10 @@ _allowed_origin_pattern = (
 
 def _origin_is_allowed(origin: Optional[str]) -> bool:
     if not origin:
-        # CLI 等の非ブラウザクライアントは Origin を送らない。API キー認証は必須。
+        # CLI 等の非ブラウザクライアントは Origin を送らない。Origin 検査は
+        # 「他サイトのページから勝手に繋がれない」ためのもので、濫用対策では
+        # ない（送らない相手には効かない）。実際の上限は接続レートと
+        # ルーム数（global / per-client）が担う。
         return True
     return origin in ALLOWED_ORIGINS or bool(
         _allowed_origin_pattern and _allowed_origin_pattern.fullmatch(origin)
@@ -100,8 +103,9 @@ async def _stream_live_chat(
         await websocket.close(code=1008, reason="Origin not allowed")
         return
 
-    client_key = _websocket_client_key(websocket)
-    verdict = _connection_limiter.check(client_key)
+    # import した client_key() を隠さないよう別名にする
+    rate_limit_key = _websocket_client_key(websocket)
+    verdict = _connection_limiter.check(rate_limit_key)
     if not verdict.allowed:
         await websocket.close(code=1013, reason="Too many connection attempts")
         return
@@ -114,7 +118,7 @@ async def _stream_live_chat(
     # 実際の pytchat セッションはハブが動画単位で1本だけ持つ。
     # ここは配られてくるメッセージを自分のソケットへ流すだけ。
     try:
-        queue = await hub.subscribe(video_id, client_key)
+        queue = await hub.subscribe(video_id, rate_limit_key)
     except RoomCapacityError:
         # 1013 = Try Again Later。クライアントは再接続してよい
         await websocket.close(code=1013, reason="Too many live chat sessions")
@@ -150,7 +154,7 @@ async def _stream_live_chat(
         if not disconnect_task.done():
             disconnect_task.cancel()
         await asyncio.gather(disconnect_task, return_exceptions=True)
-        await hub.unsubscribe(video_id, queue, client_key)
+        await hub.unsubscribe(video_id, queue, rate_limit_key)
 
 
 def create_router(hub: LiveChatHub) -> APIRouter:

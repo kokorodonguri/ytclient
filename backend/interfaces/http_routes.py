@@ -8,7 +8,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 
-from config import API_VERSION, MAX_COMMENTS_LIMIT, SERVICE_NAME
+from config import (
+    API_VERSION,
+    MAX_COMMENTS_LIMIT,
+    READINESS_MAX_FEED_AGE_SECONDS,
+    SERVICE_NAME,
+)
 from application.comments_service import (
     CommentsService,
     ServiceBusyError,
@@ -17,7 +22,6 @@ from application.comments_service import (
 from application.feed_store import FeedStore
 from application.stream_service import (
     NoStreamError,
-    NotLiveError,
     StreamService,
     UpcomingStreamError,
 )
@@ -64,6 +68,16 @@ def create_router(
                 headers={"Retry-After": "5"},
             )
 
+        # 「last_updated が入っているか」だけを見ると、収集スレッドが詰まって
+        # 更新が止まっても ready を返し続ける。古さそのものを判定に使う。
+        age = snapshot["feed_age_seconds"]
+        if age is not None and age > READINESS_MAX_FEED_AGE_SECONDS:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "stale", "data": snapshot},
+                headers={"Retry-After": "60"},
+            )
+
         status = (
             "degraded"
             if snapshot["last_error"] or snapshot["degraded_channels"]
@@ -83,18 +97,32 @@ def create_router(
         dependencies=[Depends(require_api_key), Depends(enforce_feed_rate_limit)],
         include_in_schema=False,
     )
-    def get_feed(if_none_match: Optional[str] = Header(default=None)):
-        """事前シリアライズ済みのフィードを返す。
+    def get_feed(
+        if_none_match: Optional[str] = Header(default=None),
+        accept_encoding: Optional[str] = Header(default=None),
+    ):
+        """事前シリアライズ・事前 gzip 済みのフィードを返す。
 
         クライアントは is_building 中 5 秒間隔でポーリングするが、実データが
         変わるのはバックグラウンドワーカーの 1 周期ごと。ETag が一致する間は
         304 を返してボディの転送とクライアント側の JSON パースを丸ごと省く。
+
+        非 304 のときは事前圧縮した bytes を返す。約 1.5 MB の JSON なので、
+        公開運用では非圧縮配信がそのまま帯域になる。
         """
-        payload, etag = store.response_parts()
-        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        wants_gzip = "gzip" in (accept_encoding or "").lower()
+        payload, etag, is_gzipped = store.response_parts(prefer_gzip=wants_gzip)
+        headers = {
+            "ETag": etag,
+            "Cache-Control": "no-cache",
+            "Vary": "Accept-Encoding",
+        }
 
         if if_none_match and etag in [tag.strip() for tag in if_none_match.split(",")]:
             return Response(status_code=304, headers=headers)
+
+        if is_gzipped:
+            headers["Content-Encoding"] = "gzip"
 
         return Response(
             content=payload,
@@ -140,9 +168,6 @@ def create_router(
                 detail="Stream has not started yet",
                 headers={"X-Stream-State": "upcoming"},
             ) from error
-        except NotLiveError as error:
-            # クライアントはこれを見て外部ブラウザへ誘導する
-            raise HTTPException(status_code=409, detail=str(error)) from error
         except NoStreamError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ServiceBusyError as error:

@@ -12,6 +12,9 @@ EnvironmentFile=-/etc/vspo-backend.env
 ExecStart=/home/donguri0423/yt-backend/.venv-prod/bin/python /home/donguri0423/yt-backend/main.py 8010 127.0.0.1
 Restart=always
 RestartSec=5
+# 設定不備 (EX_CONFIG) は再起動しても直らない。Restart=always のままだと
+# 生 traceback を 5 秒ごとに吐き続け、原因がログに埋もれる。
+RestartPreventExitStatus=78
 TimeoutStopSec=20
 MemoryHigh=2G
 MemoryMax=3G

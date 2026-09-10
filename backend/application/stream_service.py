@@ -32,10 +32,6 @@ from infrastructure.youtube_scraper import fetch_video_stream_info
 MAX_VIDEO_HEIGHT = 1080
 
 
-class NotLiveError(Exception):
-    """配信中ではない（現在は VOD も扱うため通常は送出しない）。"""
-
-
 class UpcomingStreamError(Exception):
     """開始前の配信。まだ再生できるものが存在しない。"""
 

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import (
@@ -78,9 +79,17 @@ def create_app() -> FastAPI:
         # ブラウザが preflight で Access-Control-Request-Private-Network を送る。
         # これを許可しないと Chrome 系でブロックされる。
         allow_private_network=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        # ワイルドカードにしない。読み取り専用 API なので許すのは GET だけで
+        # 足り、ヘッダーもクライアントが実際に送る 4 つに限る。CORS は濫用
+        # 対策ではないが、広げる理由が無いものを広げておく意味も無い。
+        allow_methods=["GET"],
+        allow_headers=["Authorization", "X-API-Key", "X-Request-ID", "Content-Type"],
     )
+
+    # /api/v1/feed は自前で事前 gzip 済み（Content-Encoding 設定済みの応答は
+    # GZipMiddleware が素通しする）。ここで効くのは /app 配下の静的ファイルと
+    # コメント・ストリームの JSON。
+    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     register_exception_handlers(app)
     app.include_router(http_routes.create_router(store, comments, streams))

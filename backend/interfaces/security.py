@@ -21,6 +21,11 @@ def api_key_matches(candidate: Optional[str]) -> bool:
         not isinstance(candidate, str)
         or not candidate
         or len(candidate) > MAX_API_KEY_LENGTH
+        # compare_digest は str 同士でも非 ASCII があると TypeError を投げる。
+        # Starlette はヘッダーを latin-1 でデコードするので、X-API-Key に
+        # 0x80 以上のバイトを 1 つ入れるだけで非 ASCII の str になり、
+        # 401 のはずが 500、WS では 1008 のはずが 1011 になっていた。
+        or not candidate.isascii()
     ):
         return False
     return secrets.compare_digest(candidate, API_KEY)

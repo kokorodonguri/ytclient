@@ -9,13 +9,14 @@ NOTE: プロセス内シングルトン。uvicorn --workers 2+ ではワーカ�
 共有されないため、マルチワーカー化する際は Redis / SQLite 等へ外出しする。
 """
 
+import gzip
 import hashlib
 import json
 import os
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import logger
 from domain.feed_rules import normalize_feed
@@ -43,7 +44,10 @@ class FeedStore:
             "total_channels": total_channels,
         }
         self._payload: bytes = b""
+        self._payload_gzip: bytes = b""
         self._etag: str = ""
+        self._version = 0
+        self._published_version = 0
         self._total_channels = total_channels
 
         # 1 サイクル分の取得失敗の集計。収集ワーカーの複数スレッドから触られる
@@ -56,6 +60,11 @@ class FeedStore:
         self._discovery_runs = 0
 
         self._load_cache()
+        # ここで一度組み立てておけば _payload が空になる状態が無くなり、
+        # response_parts() はロックを取って返すだけで済む。
+        with self._lock:
+            version, snapshot = self._snapshot_locked()
+        self._publish(version, snapshot)
 
     # --- 永続キャッシュ -----------------------------------------------------
 
@@ -97,7 +106,6 @@ class FeedStore:
                     "total_channels": self._total_channels,
                 }
             )
-            self._rebuild_cache_locked()
             logger.info(
                 "Loaded cached feed (%d official, %d clips)",
                 len(official),
@@ -150,36 +158,67 @@ class FeedStore:
 
     # --- 状態の更新 ---------------------------------------------------------
 
-    def _rebuild_cache_locked(self) -> None:
-        """保持データから応答ボディと ETag を再生成する。_lock 保持下で呼ぶこと。
+    def _snapshot_locked(self) -> Tuple[int, Dict[str, Any]]:
+        """公開待ちのスナップショットに版番号を付けて返す。_lock 保持下で呼ぶ。"""
+        self._version += 1
+        return self._version, dict(self._data)
+
+    def _publish(self, version: int, snapshot: Dict[str, Any]) -> None:
+        """応答ボディと ETag を組み立て、差し替えだけをロック内で行う。
+
+        json.dumps は約 1.5 MB のフィードを走査し、SHA-256 もその全体を
+        読む。これをロック内で回すと、RSS 由来の merge_official が 60 秒ごとに
+        走るあいだ response_parts() が待たされ、/feed 全台がそこでブロックする。
+        組み立てはロック外で行い、ロックは参照の差し替えだけに使う。
 
         フィードが入れ替わったときだけ組み立て直し、それ以外のリクエストは
         同じ bytes をそのまま返す。クライアントは is_building 中 5 秒ごとに
         ポーリングするため、毎回シリアライズすると台数 × ペイロードぶんの
         CPU を無駄に焼くことになる。
         """
-        body = {"status": "success", "data": dict(self._data)}
+        body = {"status": "success", "data": snapshot}
         payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
-        self._payload = payload
         # 実際に返すバイト列のハッシュ。last_updated も本文に含まれるので、
         # 動画一覧が同じでも周期が回れば ETag は変わる（そこは HTTP の
         # 表現が変わった以上そうあるべき）。304 が効くのは「再組み立てが
         # 起きていない間の連続ポーリング」で、is_building 中の 5 秒間隔は
         # ここに収まる。record_discovery が本文を触らないのはこのため。
-        self._etag = f'W/"{hashlib.sha256(payload).hexdigest()[:32]}"'
+        etag = f'W/"{hashlib.sha256(payload).hexdigest()[:32]}"'
+        # 約 1.5 MB の JSON を毎リクエスト圧縮すると CPU が溶ける。組み立てと
+        # 同じタイミングで 1 回だけ圧縮し、以後はその bytes を配るだけにする。
+        # 転送量はおよそ 1/5 になる。
+        payload_gzip = gzip.compress(payload, compresslevel=6)
+
+        with self._lock:
+            # ロック外で組み立てる以上、収集ワーカーと RSS 周期が同時に
+            # 公開しようとすると到着順が入れ替わり得る。版番号で古い
+            # スナップショットを捨て、新しい方を残す。
+            if version < self._published_version:
+                return
+            self._payload = payload
+            self._payload_gzip = payload_gzip
+            self._etag = etag
+            self._published_version = version
 
     def set_building(self, is_building: bool) -> None:
         with self._lock:
             self._data["is_building"] = is_building
-            self._rebuild_cache_locked()
+            version, snapshot = self._snapshot_locked()
+        self._publish(version, snapshot)
 
     def mark_error(self, error: Exception) -> None:
+        # 例外の文字列は配信しない。yt-dlp の例外文には上流URLやローカルの
+        # ファイルパスが混じり、last_error は /api/v1/feed と /readiness の
+        # 本文にそのまま載る。読み取りAPIは公開なので誰でも読める。
+        # 種類だけ返せばクライアント側の分岐には足り、詳細はログに残る。
+        logger.warning("Feed refresh failed: %s: %s", type(error).__name__, error)
         with self._lock:
             self._data["is_building"] = False
-            self._data["last_error"] = str(error)
-            self._rebuild_cache_locked()
+            self._data["last_error"] = type(error).__name__
+            version, snapshot = self._snapshot_locked()
+        self._publish(version, snapshot)
 
     def replace(
         self,
@@ -198,7 +237,8 @@ class FeedStore:
             self._data["last_error"] = None
             self._data["degraded_channels"] = degraded
             self._data["total_channels"] = self._total_channels
-            self._rebuild_cache_locked()
+            version, snapshot = self._snapshot_locked()
+        self._publish(version, snapshot)
 
         if degraded:
             logger.warning(
@@ -211,19 +251,26 @@ class FeedStore:
         if not is_building:
             self._persist_successful_feed()
 
-    def official_video_ids(self) -> set[str]:
-        """現在の公式フィードに含まれる動画IDのスナップショットを返す。"""
-        with self._lock:
-            return {
-                str(item.get("video_id"))
-                for item in self._data["official"]
-                if item.get("video_id")
-            }
-
     def official_items_snapshot(self) -> List[Dict[str, Any]]:
         """RSSオーバーレイ構築用に公式フィードの浅いコピーを返す。"""
         with self._lock:
             return [dict(item) for item in self._data["official"]]
+
+    def _feed_age_seconds_locked(self) -> Optional[float]:
+        """最後の更新からの経過秒。_lock 保持下で呼ぶこと。
+
+        「last_updated が入っているか」だけでは、収集スレッドが詰まって
+        更新が止まった状態を検知できない。監視が ready を信じ続けるので、
+        古さそのものを返して呼び出し側に判断させる。
+        """
+        raw_value = self._data["last_updated"]
+        if not isinstance(raw_value, str) or not raw_value:
+            return None
+        try:
+            updated_at = datetime.fromisoformat(raw_value)
+        except ValueError:
+            return None
+        return max(0.0, (datetime.now() - updated_at).total_seconds())
 
     def readiness_snapshot(self) -> Dict[str, Any]:
         """監視用に、フィードの可用性だけを小さいペイロードで返す。"""
@@ -231,6 +278,7 @@ class FeedStore:
             return {
                 "is_building": bool(self._data["is_building"]),
                 "last_updated": self._data["last_updated"],
+                "feed_age_seconds": self._feed_age_seconds_locked(),
                 "last_error": self._data["last_error"],
                 "official_count": len(self._data["official"]),
                 "clip_count": len(self._data["clips"]),
@@ -250,9 +298,8 @@ class FeedStore:
         """RSS周期の実行結果をfeed本体のETagを変えずに記録する。"""
         with self._lock:
             self._last_discovery_at = datetime.now().isoformat()
-            self._last_discovery_error = (
-                f"{type(error).__name__}: {error}"[:256] if error else None
-            )
+            # mark_error と同じ理由で例外文は載せない（readiness で配信される）
+            self._last_discovery_error = type(error).__name__ if error else None
             self._last_discovery_added = max(0, int(added))
             self._discovery_runs += 1
 
@@ -283,17 +330,23 @@ class FeedStore:
             )
             self._data["last_updated"] = datetime.now().isoformat()
             self._data["last_error"] = None
-            self._rebuild_cache_locked()
+            version, snapshot = self._snapshot_locked()
             added = len(additions)
 
+        self._publish(version, snapshot)
         self._persist_successful_feed()
         return added
 
     # --- 読み出し -----------------------------------------------------------
 
-    def response_parts(self) -> Tuple[bytes, str]:
-        """(応答ボディ, ETag) を返す。"""
+    def response_parts(self, prefer_gzip: bool = False) -> Tuple[bytes, str, bool]:
+        """(応答ボディ, ETag, gzip済みか) を返す。
+
+        __init__ と各更新経路が publish 済みなので、ここは参照を読むだけ。
+        ETag は表現によらず同じ値にし、キャッシュの区別は Vary: Accept-Encoding
+        に任せる（弱い ETag なのでこれで整合する）。
+        """
         with self._lock:
-            if not self._payload:
-                self._rebuild_cache_locked()
-            return self._payload, self._etag
+            if prefer_gzip and self._payload_gzip:
+                return self._payload_gzip, self._etag, True
+            return self._payload, self._etag, False
