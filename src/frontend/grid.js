@@ -14,6 +14,7 @@ import {
 import { MESSAGES } from "./constants.js";
 
 const MODULE = "GRID";
+const searchIndexes = new WeakMap();
 
 /**
  * ========================================
@@ -156,9 +157,16 @@ function filterVideos(videos, filters = {}) {
     if (hasSearch) {
       // 検索インデックス（小文字化されたタイトルと投稿者名）を遅延生成してキャッシュ
       // ユーザーの入力毎の大量の文字列結合・toLowerCase()・GC 負荷をゼロにする
-      const searchIndex =
-        v._searchIndex ||
-        (v._searchIndex = `${v.title || ""} ${v.uploader || ""}`.toLowerCase());
+      let cached = searchIndexes.get(v);
+      if (!cached || cached.title !== v.title || cached.uploader !== v.uploader) {
+        cached = {
+          title: v.title,
+          uploader: v.uploader,
+          text: `${v.title || ""} ${v.uploader || ""}`.toLowerCase(),
+        };
+        searchIndexes.set(v, cached);
+      }
+      const searchIndex = cached.text;
 
       let matches = true;
       for (let j = 0; j < searchTermsCount; j += 1) {
@@ -241,6 +249,8 @@ export function renderGrid(state, dom) {
         : state.appData.clips;
 
     if (!Array.isArray(source)) {
+      cancelPendingRender();
+      renderedGrid = null;
       container.innerHTML = `<p class="message-card">${MESSAGES.INFO.INVALID_DATA}</p>`;
       return;
     }
@@ -259,6 +269,7 @@ export function renderGrid(state, dom) {
     // 構築中かつ結果がない場合
     if (state.appData.is_building && sorted.length === 0) {
       cancelPendingRender();
+      renderedGrid = null;
       renderBuildingState(container);
       return;
     }
@@ -268,12 +279,15 @@ export function renderGrid(state, dom) {
       renderVideos(container, sorted, state.appData.is_building);
     } else {
       cancelPendingRender();
+      renderedGrid = null;
       renderEmptyState(container);
     }
 
     log(MODULE, `Rendered ${sorted.length} videos`);
     return sorted.length;
   } catch (error) {
+    cancelPendingRender();
+    renderedGrid = null;
     logError(MODULE, "Error rendering grid", error);
     container.innerHTML = `<p class="message-card">${MESSAGES.ERROR.FAILED_RENDER}</p>`;
     return 0;
@@ -369,6 +383,36 @@ function formatLastUpdated(rawValue) {
 const RENDER_CHUNK_SIZE = 60;
 
 let pendingRender = null;
+let renderedGrid = null;
+const CARD_FIELDS = [
+  "video_id", "title", "uploader", "thumbnail", "is_live", "is_upcoming",
+  "is_live_archive", "timestamp",
+];
+
+function cardTimeLabel(video, nowSec) {
+  return !video.is_live && !video.is_upcoming && video.timestamp
+    ? formatRelativeTime(video.timestamp, nowSec)
+    : "";
+}
+
+function rememberCard(video, nowSec) {
+  return {
+    values: CARD_FIELDS.map((field) => video[field]),
+    timeLabel: cardTimeLabel(video, nowSec),
+  };
+}
+
+function canReuseGrid(container, videos, isBuilding, nowSec) {
+  if (!renderedGrid || renderedGrid.container !== container ||
+      renderedGrid.total !== videos.length || renderedGrid.isBuilding !== isBuilding) {
+    return false;
+  }
+  return renderedGrid.cards.every((card, index) => {
+    const video = videos[index];
+    return CARD_FIELDS.every((field, i) => card.values[i] === video[field]) &&
+      card.timeLabel === cardTimeLabel(video, nowSec);
+  });
+}
 
 /**
  * 進行中の段階描画を止める。再描画・画面切り替えの前に必ず呼ぶ
@@ -377,6 +421,8 @@ function cancelPendingRender() {
   if (!pendingRender) return;
   pendingRender.observer?.disconnect();
   window.removeEventListener("scroll", onScrollMaybeAppend);
+  // 中断でも aria-busy は必ず降ろす。残すと「永遠に読み込み中」になる。
+  pendingRender.container?.removeAttribute("aria-busy");
   pendingRender = null;
 }
 
@@ -401,12 +447,13 @@ function onScrollMaybeAppend() {
 function appendChunk() {
   if (!pendingRender) return;
 
-  const { videos, sentinel } = pendingRender;
+  const { container, videos, sentinel } = pendingRender;
   const start = pendingRender.offset;
   const end = Math.min(start + RENDER_CHUNK_SIZE, videos.length);
   if (start >= end) {
     cancelPendingRender();
     sentinel?.remove();
+    container?.removeAttribute("aria-busy");
     return;
   }
 
@@ -414,6 +461,7 @@ function appendChunk() {
   let html = "";
   for (let i = start; i < end; i += 1) {
     html += buildVideoCardHTML(videos[i], nowSec);
+    renderedGrid.cards.push(rememberCard(videos[i], nowSec));
   }
   // 番兵の手前に差し込む。innerHTML の作り直しではないので
   // 既存カードのノードもスクロール位置も維持される
@@ -423,6 +471,7 @@ function appendChunk() {
   if (end >= videos.length) {
     cancelPendingRender();
     sentinel.remove();
+    container.removeAttribute("aria-busy");
   }
 }
 
@@ -433,6 +482,12 @@ function appendChunk() {
  * @param {boolean} isBuilding - 構築中フラグ
  */
 function renderVideos(container, videos, isBuilding = false) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (canReuseGrid(container, videos, isBuilding, nowSec)) {
+    // 未描画部分は次のチャンクで最新データを使う。既存DOMとフォーカスを維持する。
+    if (pendingRender) pendingRender.videos = videos;
+    return;
+  }
   cancelPendingRender();
 
   // 再描画でフォーカス中のカードが破棄されるため、復元用にIDを保持
@@ -440,14 +495,19 @@ function renderVideos(container, videos, isBuilding = false) {
     document.activeElement?.closest?.(".video-card")?.dataset.videoId || null;
 
   const firstCount = Math.min(RENDER_CHUNK_SIZE, videos.length);
-  const nowSec = Math.floor(Date.now() / 1000);
+  renderedGrid = { container, total: videos.length, isBuilding, cards: [] };
   let html = "";
   for (let i = 0; i < firstCount; i += 1) {
     html += buildVideoCardHTML(videos[i], nowSec);
+    renderedGrid.cards.push(rememberCard(videos[i], nowSec));
   }
   container.innerHTML = html;
 
   if (videos.length > firstCount) {
+    // まだ続きが流れ込む。支援技術には「読み込み中」であることを伝える
+    // (4000 枚規模だと最初のチャンク以降が数秒かけて追加される)
+    container.setAttribute("aria-busy", "true");
+
     const sentinel = document.createElement("div");
     sentinel.className = "grid-sentinel";
     sentinel.setAttribute("aria-hidden", "true");
@@ -460,7 +520,8 @@ function renderVideos(container, videos, isBuilding = false) {
       // スクロールしてから描き始めることによる空白を避ける
       const observer = new IntersectionObserver(
         (entries) => {
-          if (entries.some((entry) => entry.isIntersecting)) appendChunk();
+          if (pendingRender?.sentinel === sentinel &&
+              entries.some((entry) => entry.isIntersecting)) appendChunk();
         },
         { rootMargin: "800px 0px" },
       );
@@ -517,7 +578,6 @@ function renderEmptyState(container) {
     </div>
   `;
 }
-
 
 
 
