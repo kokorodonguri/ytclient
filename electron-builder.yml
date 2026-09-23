@@ -1,0 +1,37 @@
+# electron-builder の設定。package.json の "build" から移した。
+# JSON にはコメントが書けず、"//files" のような擬似コメントキーは
+# electron-builder 24 のスキーマ検証が unknown property として弾いてビルドが落ちる。
+appId: com.vspo.client
+productName: VSPO Client
+
+# asar に入れるものだけを明示する。省略すると electron-builder がリポジトリ直下を
+# 丸ごと詰め、build_temp の APIキーや .claude/worktrees まで配布物に混入する。
+# フロントエンド本体は extraResources 経由で resourcesPath/frontend に入るため
+# asar 側には不要で、preload.js だけが __dirname 解決で必要。
+files:
+  - main.js
+  - src/frontend/preload.js
+  - assets/icon.ico
+  - package.json
+  - "!node_modules/**"
+
+directories:
+  output: dist
+
+win:
+  target: nsis
+  icon: assets/icon.ico
+  signAndEditExecutable: false
+
+nsis:
+  # 起動中のアプリを確実に閉じるための上書き (customCheckAppRunning)。
+  # electron-builder 標準の検出が取りこぼすと、旧アンインストーラがロックされた
+  # exe を rename できず終了コード 2 で死に、上書きインストールが必ず失敗する。
+  include: build/installer.nsh
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  installerHeaderIcon: assets/icon.ico
+
+extraResources:
+  - from: src/frontend
+    to: frontend

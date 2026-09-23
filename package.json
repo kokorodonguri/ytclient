@@ -12,40 +12,10 @@
     "stamp:icon": "node scripts/stamp-icon.mjs",
     "vendor:copy": "node -e \"const fs=require('fs');const path=require('path');const s='node_modules/hls.js/dist/hls.light.min.js';const d='src/frontend/vendor/hls.light.min.js';if(fs.existsSync(s)){fs.mkdirSync(path.dirname(d),{recursive:true});fs.copyFileSync(s,d);}\"",
     "postinstall": "npm run vendor:copy",
-    "build": "npm run vendor:copy && electron-builder --win dir && npm run stamp:icon && electron-builder --win nsis --prepackaged dist/win-unpacked",
+    "clean:unpacked": "node -e \"require('fs').rmSync('dist/win-unpacked',{recursive:true,force:true})\"",
+    "build": "npm run vendor:copy && npm run clean:unpacked && electron-builder --win dir && npm run stamp:icon && electron-builder --win nsis --prepackaged dist/win-unpacked",
     "android:sync": "npx cap sync android",
     "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/build-apk.ps1"
-  },
-  "build": {
-    "appId": "com.vspo.client",
-    "//files": "asar に入れるものだけを明示する。省略すると electron-builder がリポジトリ直下を丸ごと詰め、build_temp の APIキーや .claude/worktrees まで配布物に混入する。フロントエンド本体は extraResources 経由で resourcesPath/frontend に入るため asar 側には不要で、preload.js だけが __dirname 解決で必要。",
-    "files": [
-      "main.js",
-      "src/frontend/preload.js",
-      "assets/icon.ico",
-      "package.json",
-      "!node_modules/**"
-    ],
-    "productName": "VSPO Client",
-    "directories": {
-      "output": "dist"
-    },
-    "win": {
-      "target": "nsis",
-      "icon": "assets/icon.ico",
-      "signAndEditExecutable": false
-    },
-    "nsis": {
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
-    },
-    "extraResources": [
-      {
-        "from": "src/frontend",
-        "to": "frontend"
-      }
-    ]
   },
   "devDependencies": {
     "@capacitor/cli": "^8.4.1",
