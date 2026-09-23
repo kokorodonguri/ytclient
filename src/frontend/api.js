@@ -19,6 +19,8 @@ const MODULE = "API";
 const LIVE_CHAT_MAX_ATTEMPTS = 5;
 const LIVE_CHAT_BASE_RETRY_MS = 2000;
 const LIVE_CHAT_MAX_RETRY_MS = 30000;
+// 接続がこの時間続いたら健全とみなして再試行回数を戻す
+const LIVE_CHAT_STABLE_MS = 30000;
 // 1008 Policy Violation: 動画IDが不正・Origin 不許可・認証失敗。再試行しない。
 const LIVE_CHAT_CLOSE_POLICY_VIOLATION = 1008;
 // 1013 Try Again Later: サーバー側のルーム上限。少し待てば入れる。
@@ -321,6 +323,7 @@ export function connectLiveChat(videoId, handlers = {}) {
 
   let socket = null;
   let retryTimer = null;
+  let stableTimer = null;
   let attempt = 0;
   let closedByCaller = false;
 
@@ -329,6 +332,21 @@ export function connectLiveChat(videoId, handlers = {}) {
       clearTimeout(retryTimer);
       retryTimer = null;
     }
+  };
+
+  // 開いた直後に閉じられる接続 (終わった配信など) で回数を戻すと
+  // LIVE_CHAT_MAX_ATTEMPTS に届かず無限に張り直すため、メッセージを受け取るか
+  // 一定時間つながり続けてから戻す。
+  const clearStableTimer = () => {
+    if (stableTimer !== null) {
+      clearTimeout(stableTimer);
+      stableTimer = null;
+    }
+  };
+
+  const markHealthy = () => {
+    clearStableTimer();
+    attempt = 0;
   };
 
   const scheduleReconnect = (reason) => {
@@ -388,13 +406,14 @@ export function connectLiveChat(videoId, handlers = {}) {
           logError(MODULE, "Failed to send WebSocket auth message", error);
         }
       }
-      // 開けたので次の切断は 1 回目からやり直す
-      attempt = 0;
+      clearStableTimer();
+      stableTimer = setTimeout(markHealthy, LIVE_CHAT_STABLE_MS);
       log(MODULE, `Live chat connected for video ${videoId}`);
       notify("open");
     };
 
     socket.onmessage = (event) => {
+      if (attempt !== 0) markHealthy();
       try {
         handlers.onMessage?.(JSON.parse(event.data));
       } catch (error) {
@@ -409,6 +428,7 @@ export function connectLiveChat(videoId, handlers = {}) {
 
     socket.onclose = (event) => {
       socket = null;
+      clearStableTimer();
       if (closedByCaller) return;
 
       // 1008 は「動画IDが不正 / Origin 不許可 / 認証失敗」。張り直しても同じ。
@@ -435,6 +455,7 @@ export function connectLiveChat(videoId, handlers = {}) {
     close() {
       closedByCaller = true;
       clearRetryTimer();
+      clearStableTimer();
       window.removeEventListener("online", connect);
       if (
         socket &&

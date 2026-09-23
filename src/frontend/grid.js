@@ -52,6 +52,13 @@ function buildVideoCardHTML(item, currentUnixSeconds) {
       statusLabel = "動画";
     }
 
+    // メンバー限定は埋め込み/HLS では再生できず、クリックで YouTube へ渡す。
+    // 押す前に分かるよう、サムネイル上にも出す
+    const membersLabel = item.is_members_only ? "メンバー限定" : "";
+    if (membersLabel) {
+      badgesHTML += `<span class="badge members-badge">${membersLabel}</span>`;
+    }
+
     let timeStr = "";
     if (!item.is_live && !item.is_upcoming && item.timestamp) {
       timeStr = formatRelativeTime(item.timestamp, currentUnixSeconds);
@@ -66,10 +73,11 @@ function buildVideoCardHTML(item, currentUnixSeconds) {
     const uploader = escapeHTML(item.uploader || "");
     const thumbnail = escapeAttribute(item.thumbnail || "");
     const isLive = item.is_live ? "true" : "false";
+    const isMembersOnly = item.is_members_only ? "true" : "false";
     // accessible nameはaria-labelが可視テキストを丸ごと置き換えるため、
     // カード内に見える文字列（状態ラベル・経過時間・タイトル・チャンネル名）を
     // すべて含めないとWCAG 2.5.3 (Label in Name) 違反になる
-    const ariaLabel = [timeStr, statusLabel, `${title} - ${uploader}`]
+    const ariaLabel = [membersLabel, timeStr, statusLabel, `${title} - ${uploader}`]
       .filter(Boolean)
       .join("、");
 
@@ -80,6 +88,7 @@ function buildVideoCardHTML(item, currentUnixSeconds) {
         data-video-id="${videoId}"
         data-title="${title}"
         data-is-live="${isLive}"
+        data-members-only="${isMembersOnly}"
         aria-label="${ariaLabel}"
       >
         <div class="thumbnail-container">
@@ -386,7 +395,7 @@ let pendingRender = null;
 let renderedGrid = null;
 const CARD_FIELDS = [
   "video_id", "title", "uploader", "thumbnail", "is_live", "is_upcoming",
-  "is_live_archive", "timestamp",
+  "is_live_archive", "is_members_only", "timestamp",
 ];
 
 function cardTimeLabel(video, nowSec) {

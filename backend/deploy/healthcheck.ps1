@@ -9,7 +9,9 @@ if ($ApiKey) {
   $headers["X-API-Key"] = $ApiKey
 }
 
-$checkPath = if ($ApiKey) { "/api/v1/readiness" } else { "/api/v1/health" }
+# readiness is public regardless of the key; health always succeeds and would
+# miss a feed that never loaded or went stale.
+$checkPath = "/api/v1/readiness"
 $uri = $BaseUrl.TrimEnd("/") + $checkPath
 $response = Invoke-RestMethod -Uri $uri -Headers $headers -TimeoutSec 5
 if ($response.status -notin @("success", "ready", "degraded")) {

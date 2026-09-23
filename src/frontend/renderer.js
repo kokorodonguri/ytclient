@@ -14,7 +14,9 @@ import {
 import {
   fetchFeed,
   getErrorMessage,
+  getYouTubeWatchUrl,
   initApiCredentials,
+  openExternalUrl,
   testApiConnection,
 } from "./api.js";
 import { initializeUI, renderCurrentGrid } from "./ui.js";
@@ -334,6 +336,16 @@ function setupGridClickHandlers() {
   log(MODULE, "Grid click handlers registered");
 }
 
+async function openMembersOnlyVideo(videoId) {
+  const watchUrl = getYouTubeWatchUrl(videoId);
+  try {
+    await openExternalUrl(watchUrl);
+  } catch (error) {
+    logError(MODULE, "Error opening members-only video", error);
+    window.open(watchUrl, "_blank", "noopener,noreferrer");
+  }
+}
+
 /**
  * ビデオカードクリック時の処理
  * @param {Event} event - クリックイベント
@@ -349,6 +361,13 @@ function handleVideoCardClick(event) {
 
     if (!videoId || !title) {
       console.error("[CARD_CLICK] Missing video data");
+      return;
+    }
+
+    // メンバー限定は埋め込みも HLS 解決も通らないので、アプリ内で開かず
+    // ログイン済みの YouTube に渡す
+    if (card.dataset.membersOnly === "true") {
+      openMembersOnlyVideo(videoId);
       return;
     }
 

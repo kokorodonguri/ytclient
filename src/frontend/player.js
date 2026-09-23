@@ -189,12 +189,23 @@ function stopChromeHeightTracking() {
   document.documentElement.style.removeProperty('--player-chrome-h');
 }
 
+// 描画のたびに進める世代番号。ストリーム解決や概要取得を待つ間に
+// 閉じられたり別の動画が選ばれたりしたら、古い描画の続きを捨てるために使う。
+let renderGeneration = 0;
+
+function isStaleRender(generation) {
+  return generation !== renderGeneration;
+}
+
 async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
   if (!videoId || typeof videoId !== 'string') {
     console.error('Invalid video ID');
     showToast(MESSAGES.ERROR.INVALID_VIDEO_ID);
     return;
   }
+
+  renderGeneration += 1;
+  const generation = renderGeneration;
 
   try {
     const watchUrl = getYouTubeWatchUrl(videoId);
@@ -204,6 +215,9 @@ async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
     const streamUrl = forceEmbed
       ? null
       : await resolveStreamUrl({ videoId, isLive });
+
+    // 解決を待つ間に閉じられた / 別の動画に切り替わった
+    if (isStaleRender(generation)) return;
 
     const useHls = Boolean(streamUrl);
 
@@ -239,7 +253,7 @@ async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
     }
 
     // 背景で説明文を取得・表示（コメント欄もこの中で用意する）
-    fetchAndDisplayDescription(videoId);
+    fetchAndDisplayDescription(videoId, generation);
   } catch (error) {
     console.error('Error rendering player:', error);
     showToast('プレイヤーの描画に失敗しました。');
@@ -397,10 +411,14 @@ async function renderSplitPlayer(primaryVideo, secondaryVideo) {
     return;
   }
 
+  renderGeneration += 1;
+  const generation = renderGeneration;
+
   try {
     const videos = [primaryVideo, secondaryVideo];
     // 2 本まとめて解決する。直列だと 2 本目の表示が 1 本目の待ち時間ぶん遅れる。
     const streamUrls = await Promise.all(videos.map(resolveStreamUrl));
+    if (isStaleRender(generation)) return;
     const entries = videos.map((video, index) => ({
       video,
       streamUrl: streamUrls[index],
@@ -726,7 +744,7 @@ function handleDanmakuMessage(data, container) {
 /**
  * 説明文を取得して表示
  */
-async function fetchAndDisplayDescription(videoId) {
+async function fetchAndDisplayDescription(videoId, generation) {
   const descContainer = document.getElementById('description-container');
   if (!descContainer) return;
 
@@ -740,10 +758,13 @@ async function fetchAndDisplayDescription(videoId) {
 
   try {
     const description = await fetchVideoDescription(videoId);
+    if (isStaleRender(generation)) return;
 
     if (!description) {
+      // 概要が空でもコメントはあり得るので、ここで return せず下のコメント欄まで進む
       descContainer.innerHTML =
         `<p class="description-status">${MESSAGES.INFO.NO_DESCRIPTION}</p>`;
+      appendCommentsSection(descContainer, videoId);
       return;
     }
 
@@ -776,6 +797,7 @@ async function fetchAndDisplayDescription(videoId) {
       });
     }
   } catch (error) {
+    if (isStaleRender(generation)) return;
     console.error('Error fetching description:', error);
     descContainer.innerHTML =
       `<p class="description-status error">${MESSAGES.ERROR.FAILED_DESCRIPTION}</p>`;
@@ -989,6 +1011,9 @@ export function playVideo(videoId, title, isLive) {
  * プレイヤーを閉じる
  */
 export function closePlayer() {
+  // 描画途中 (ストリーム解決待ち) のものがあれば、その続きを無効にする
+  renderGeneration += 1;
+
   // WebSocketをクローズ
   if (state.activeChatSocket) {
     state.activeChatSocket.close();

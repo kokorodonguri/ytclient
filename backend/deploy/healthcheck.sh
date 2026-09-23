@@ -3,10 +3,9 @@ set -eu
 
 BASE_URL="${1:-http://127.0.0.1:8010}"
 API_KEY="${VSPO_API_KEY:-}"
-CHECK_PATH="/api/v1/health"
-if [ -n "$API_KEY" ]; then
-  CHECK_PATH="/api/v1/readiness"
-fi
+# readiness はキーの有無に関わらず公開されている。health は常に成功するので、
+# フィード未取得や更新停止 (stale) を検知するには readiness を見る必要がある。
+CHECK_PATH="/api/v1/readiness"
 
 if command -v curl >/dev/null 2>&1; then
   if [ -n "$API_KEY" ]; then

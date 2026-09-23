@@ -1065,6 +1065,10 @@ main {
     }
 }
 
+.members-badge {
+    background: #047857;
+}
+
 .time-badge {
     background: rgba(0, 0, 0, 0.55);
 }
