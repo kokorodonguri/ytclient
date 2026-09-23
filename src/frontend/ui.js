@@ -19,7 +19,7 @@ import {
   showToast,
 } from "./dom.js";
 import { renderGrid } from "./grid.js";
-import { closePlayer } from "./player.js";
+import { cancelSplitSelection, closePlayer } from "./player.js";
 import {
   log,
   logError,
@@ -276,6 +276,52 @@ function initializeTabButtons() {
 }
 
 /**
+ * Escape キーの単一の入口
+ *
+ * 以前は document に 2 つ、モーダル要素に 1 つの keydown があり、
+ * どれが先に効くかを defaultPrevented と hidden の場当たり判定で
+ * 調整していた。ここで「手前にあるものから 1 つだけ閉じる」に統一する。
+ */
+function handleGlobalEscape(event) {
+  if (event.key !== "Escape" && event.key !== "Esc") return;
+  // モーダル内のトラップが処理済み
+  if (event.defaultPrevented) return;
+
+  try {
+    // 1. 設定モーダル（フォーカスが外に逃げていた場合の保険）
+    const modal = getDOM("settingsModal");
+    if (modal && !modal.classList.contains("hidden")) {
+      event.preventDefault();
+      closeSettingsModal();
+      return;
+    }
+
+    // 2. 開いているドロップダウン
+    if (getDOM("gameOptions")?.classList.contains("show")) {
+      event.preventDefault();
+      closeAllDropdowns();
+      return;
+    }
+
+    // 3. サイドバー
+    if (isSidebarOpen()) {
+      event.preventDefault();
+      closeSidebar();
+      return;
+    }
+
+    // 4. プレイヤー
+    const playerView = getDOM("playerView");
+    if (playerView && !playerView.classList.contains("hidden")) {
+      event.preventDefault();
+      closePlayer();
+    }
+  } catch (error) {
+    logError(MODULE, "Error handling Escape", error);
+  }
+}
+
+/**
  * ========================================
  * グローバルハンドラー初期化
  * ======================================== */
@@ -295,20 +341,8 @@ function initializeGlobalHandlers() {
     }
   });
 
-  // Escapeでサイドバーを閉じる（オーバーレイクリックのキーボード代替）
-  // ドロップダウンが開いている場合はそちらも閉じる
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isSidebarOpen()) {
-      closeSidebar();
-    }
-    if (e.key === "Escape") {
-      try {
-        closeAllDropdowns();
-      } catch (error) {
-        logError(MODULE, "Error closing dropdowns on Escape", error);
-      }
-    }
-  });
+  // Escape の処理はここ 1 箇所だけ（handleGlobalEscape を参照）
+  document.addEventListener("keydown", handleGlobalEscape);
 
   // 更新ボタン
   if (refreshBtn) {
@@ -364,6 +398,12 @@ function initializeGlobalHandlers() {
       openSettingsModal();
     });
   }
+
+  // 2画面の選択を取り消す。以前は一度入ると抜ける手段が無く、次に何か
+  // 再生するまで「2本目を待っている」状態が続いていた。
+  getDOM("splitSelectionCancelBtn")?.addEventListener("click", () => {
+    cancelSplitSelection();
+  });
 
   log(MODULE, "Global handlers initialized");
 }
@@ -540,22 +580,6 @@ function initializeBackButton() {
       }
     });
   }
-
-  // Esc でプレイヤーを閉じる (フォーカスが iframe 外にある場合)
-  document.addEventListener("keydown", (e) => {
-    try {
-      if (e.key !== "Escape" && e.key !== "Esc") return;
-      if (e.defaultPrevented) return;
-      const modal = getDOM("settingsModal");
-      if (modal && !modal.classList.contains("hidden")) return;
-      const playerView = getDOM("playerView");
-      if (!playerView || playerView.classList.contains("hidden")) return;
-      e.preventDefault();
-      closePlayer();
-    } catch (error) {
-      logError(MODULE, "Error handling player Escape", error);
-    }
-  });
 
   log(MODULE, "Back button initialized");
 }

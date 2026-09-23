@@ -14,6 +14,16 @@ import { getFromLocalStorage, log, logError } from "./utils.js";
 
 const MODULE = "API";
 
+// ライブチャットの再接続。配信が終わってもサーバーは正常終了で閉じるため、
+// 無制限に張り直すと「ルーム作成 → 即クローズ」の往復を延々と続けてしまう。
+const LIVE_CHAT_MAX_ATTEMPTS = 5;
+const LIVE_CHAT_BASE_RETRY_MS = 2000;
+const LIVE_CHAT_MAX_RETRY_MS = 30000;
+// 1008 Policy Violation: 動画IDが不正・Origin 不許可・認証失敗。再試行しない。
+const LIVE_CHAT_CLOSE_POLICY_VIOLATION = 1008;
+// 1013 Try Again Later: サーバー側のルーム上限。少し待てば入れる。
+const LIVE_CHAT_CLOSE_TRY_AGAIN_LATER = 1013;
+
 /**
  * ========================================
  * 認証情報
@@ -282,26 +292,91 @@ export async function fetchVideoDescription(videoId) {
  * ======================================== */
 
 /**
- * ライブチャット WebSocketを作成
- * @param {string} videoId - YouTubeビデオID
- * @param {Object} handlers - { onMessage, onError, onClose }
- * @returns {WebSocket|null}
+ * ライブチャットへ接続する（自動再接続つき）
+ *
+ * 以前は素の WebSocket を返すだけで再接続が無く、切断がユーザーに何も
+ * 見えなかった（弾幕が黙って止まる）。ここで指数バックオフの再接続と
+ * 状態通知を持つ。
+ *
+ * @param {string} videoId
+ * @param {Object} handlers
+ * @param {(message: Object) => void} handlers.onMessage
+ * @param {(status: string, detail: ?string) => void} [handlers.onStatus]
+ *   status: "connecting" | "open" | "reconnecting" | "ended" | "failed"
+ * @returns {{close: () => void}|null}
  */
-export function createLiveChatWebSocket(videoId, handlers = {}) {
+export function connectLiveChat(videoId, handlers = {}) {
   if (!videoId || typeof videoId !== "string") {
-    logError(MODULE, "Invalid video ID for WebSocket", null);
+    logError(MODULE, "Invalid video ID for live chat", null);
     return null;
   }
 
-  try {
-    log(MODULE, `Creating WebSocket for video: ${videoId}`);
+  const notify = (status, detail = null) => {
+    try {
+      handlers.onStatus?.(status, detail);
+    } catch (error) {
+      logError(MODULE, "Live chat status handler threw", error);
+    }
+  };
+
+  let socket = null;
+  let retryTimer = null;
+  let attempt = 0;
+  let closedByCaller = false;
+
+  const clearRetryTimer = () => {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+
+  const scheduleReconnect = (reason) => {
+    if (closedByCaller) return;
+
+    if (attempt >= LIVE_CHAT_MAX_ATTEMPTS) {
+      // 配信が終わった場合もここに来る。無限に張り直すと、そのたびに
+      // サーバー側で pytchat のルームが作られて即閉じる往復になる。
+      notify("failed", reason);
+      return;
+    }
+
+    // オフライン中は時間で粘らない。復帰イベントを待つ方が速く確実。
+    if (navigator.onLine === false) {
+      notify("reconnecting", "オフライン");
+      window.addEventListener("online", connect, { once: true });
+      return;
+    }
+
+    const delay = Math.min(
+      LIVE_CHAT_BASE_RETRY_MS * 2 ** attempt,
+      LIVE_CHAT_MAX_RETRY_MS,
+    );
+    attempt += 1;
+    notify("reconnecting", reason);
+    log(MODULE, `Reconnecting live chat in ${delay}ms (attempt ${attempt})`);
+    clearRetryTimer();
+    retryTimer = setTimeout(connect, delay);
+  };
+
+  function connect() {
+    if (closedByCaller) return;
+    clearRetryTimer();
+    notify(attempt === 0 ? "connecting" : "reconnecting");
 
     const wsBaseUrl = API_CONFIG.BASE_URL.replace(/^http/, "ws");
     // WebSocket はブラウザからカスタムヘッダーを付けられない。クエリ文字列は
     // プロキシ/トンネルのアクセスログにフルURLごと残ることがあるため使わず、
     // 接続確立後の最初のメッセージでAPIキーを送る（サーバー側もそれを待つ）
     const wsUrl = `${wsBaseUrl}${API_CONFIG.ENDPOINTS.LIVE_CHAT(videoId)}`;
-    const socket = new WebSocket(wsUrl);
+
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (error) {
+      logError(MODULE, "Failed to create WebSocket", error);
+      scheduleReconnect("接続できません");
+      return;
+    }
 
     socket.onopen = () => {
       if (API_CONFIG.API_KEY) {
@@ -313,58 +388,69 @@ export function createLiveChatWebSocket(videoId, handlers = {}) {
           logError(MODULE, "Failed to send WebSocket auth message", error);
         }
       }
-      log(MODULE, `WebSocket connected for video ${videoId}`);
+      // 開けたので次の切断は 1 回目からやり直す
+      attempt = 0;
+      log(MODULE, `Live chat connected for video ${videoId}`);
+      notify("open");
     };
 
     socket.onmessage = (event) => {
-      if (handlers.onMessage) {
-        try {
-          const data = JSON.parse(event.data);
-          handlers.onMessage(data);
-        } catch (e) {
-          logError(MODULE, "Failed to parse WebSocket message", e);
-        }
+      try {
+        handlers.onMessage?.(JSON.parse(event.data));
+      } catch (error) {
+        logError(MODULE, "Failed to parse live chat message", error);
       }
     };
 
     socket.onerror = (error) => {
-      logError(MODULE, "WebSocket error", error);
-      if (handlers.onError) {
-        handlers.onError(error);
-      }
+      // 実際の後始末は onclose で行う（error の直後に必ず来る）
+      logError(MODULE, "Live chat socket error", error);
     };
 
-    socket.onclose = () => {
-      log(MODULE, "WebSocket closed");
-      if (handlers.onClose) {
-        handlers.onClose();
+    socket.onclose = (event) => {
+      socket = null;
+      if (closedByCaller) return;
+
+      // 1008 は「動画IDが不正 / Origin 不許可 / 認証失敗」。張り直しても同じ。
+      if (event.code === LIVE_CHAT_CLOSE_POLICY_VIOLATION) {
+        logError(MODULE, `Live chat refused (code ${event.code})`, null);
+        notify("failed", "接続を拒否されました");
+        return;
       }
+
+      // 1013 = Try Again Later。サーバー側のルーム上限なので、少し長く待つ。
+      if (event.code === LIVE_CHAT_CLOSE_TRY_AGAIN_LATER) {
+        attempt = Math.max(attempt, 2);
+        scheduleReconnect("混み合っています");
+        return;
+      }
+
+      scheduleReconnect("切断されました");
     };
-
-    return socket;
-  } catch (error) {
-    logError(MODULE, "Failed to create WebSocket", error);
-    return null;
   }
-}
 
-/**
- * WebSocketを安全に閉じる
- * @param {WebSocket} socket
- */
-export function closeWebSocket(socket) {
-  if (
-    socket &&
-    (socket.readyState === WebSocket.OPEN ||
-      socket.readyState === WebSocket.CONNECTING)
-  ) {
-    try {
-      socket.close();
-      log(MODULE, "WebSocket closed successfully");
-    } catch (e) {
-      logError(MODULE, "Error closing WebSocket", e);
-    }
-  }
+  connect();
+
+  return {
+    close() {
+      closedByCaller = true;
+      clearRetryTimer();
+      window.removeEventListener("online", connect);
+      if (
+        socket &&
+        (socket.readyState === WebSocket.OPEN ||
+          socket.readyState === WebSocket.CONNECTING)
+      ) {
+        try {
+          socket.close();
+          log(MODULE, "Live chat closed by caller");
+        } catch (error) {
+          logError(MODULE, "Error closing live chat socket", error);
+        }
+      }
+      socket = null;
+    },
+  };
 }
 
 /**

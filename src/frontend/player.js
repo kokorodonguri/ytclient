@@ -13,20 +13,93 @@ import {
   hideDescriptionContainer,
   setPlaybackCleanup,
   restoreFocusToCard,
+  updateSplitSelectionBanner,
 } from './dom.js';
 import {
   openExternalUrl,
   getYouTubeEmbedUrl,
   getYouTubeWatchUrl,
-  createLiveChatWebSocket,
-  closeWebSocket,
+  connectLiveChat,
+  fetchVideoComments,
   fetchVideoDescription,
   fetchVideoStream,
 } from './api.js';
 import state from './state.js';
 import { escapeAttribute, escapeHTML } from './utils.js';
+import { BUTTON_LABELS, MESSAGES } from './constants.js';
 
 let activeHlsInstances = [];
+
+/**
+ * video 要素に HLS を張る（単一プレイヤーと2画面で共用）
+ *
+ * @param {Object} options
+ * @param {HTMLVideoElement} options.videoEl
+ * @param {?Element} options.statusEl
+ * @param {string} options.streamUrl
+ * @param {() => void} options.onFatal 致命的エラー時の代替手段
+ */
+function attachHlsPlayback({ videoEl, statusEl, streamUrl, onFatal }) {
+  const setStatus = (text) => {
+    if (statusEl) statusEl.textContent = text;
+  };
+
+  if (window.Hls && window.Hls.isSupported()) {
+    const hls = new window.Hls({
+      enableWorker: true,
+      lowLatencyMode: true,
+      backBufferLength: 90,
+    });
+    activeHlsInstances.push(hls);
+    hls.loadSource(streamUrl);
+    hls.attachMedia(videoEl);
+
+    hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+      setStatus('HLS ネイティブ再生中 (高画質・ABR)');
+      videoEl.play().catch((err) => console.warn('Autoplay prevented', err));
+    });
+
+    hls.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal) {
+        console.warn('Fatal HLS error, falling back', data);
+        onFatal();
+      }
+    });
+    return;
+  }
+
+  if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+    videoEl.src = streamUrl;
+    videoEl.addEventListener('loadedmetadata', () => {
+      setStatus('HLS ネイティブ再生中');
+      videoEl.play().catch((err) => console.warn('Autoplay prevented', err));
+    });
+    videoEl.addEventListener('error', () => {
+      console.warn('Native HLS error, falling back');
+      onFatal();
+    });
+    return;
+  }
+
+  // hls.js もネイティブ HLS も無い環境
+  onFatal();
+}
+
+/**
+ * 配信中の動画について HLS の URL を解決する。取れなければ null。
+ */
+async function resolveStreamUrl(video) {
+  if (!video?.isLive) return null;
+  try {
+    const stream = await fetchVideoStream(video.videoId);
+    if (stream && stream.protocol === 'hls' && stream.url) {
+      return stream.url;
+    }
+  } catch (error) {
+    console.warn('HLS stream fetch failed, falling back to embed:', error);
+  }
+  return null;
+}
 
 // プレイヤーを閉じるときに HLS インスタンス、video要素、iframe を確実に停止・破棄する
 function destroyActivePlayback() {
@@ -119,7 +192,7 @@ function stopChromeHeightTracking() {
 async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
   if (!videoId || typeof videoId !== 'string') {
     console.error('Invalid video ID');
-    showToast('ビデオIDが無効です。');
+    showToast(MESSAGES.ERROR.INVALID_VIDEO_ID);
     return;
   }
 
@@ -128,17 +201,9 @@ async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
     const embedUrl = getYouTubeEmbedUrl(videoId);
 
     // ライブ配信時は HLS ストリーム解決を優先試行 (明示的に埋め込み指定された場合を除く)
-    let streamUrl = null;
-    if (isLive && !forceEmbed) {
-      try {
-        const stream = await fetchVideoStream(videoId);
-        if (stream && stream.protocol === 'hls' && stream.url) {
-          streamUrl = stream.url;
-        }
-      } catch (streamError) {
-        console.warn('HLS stream fetch failed, falling back to embed:', streamError);
-      }
-    }
+    const streamUrl = forceEmbed
+      ? null
+      : await resolveStreamUrl({ videoId, isLive });
 
     const useHls = Boolean(streamUrl);
 
@@ -173,7 +238,7 @@ async function renderPlayer(videoId, title, isLive, forceEmbed = false) {
       setupLiveChat(videoId);
     }
 
-    // 背景で説明文を取得・表示
+    // 背景で説明文を取得・表示（コメント欄もこの中で用意する）
     fetchAndDisplayDescription(videoId);
   } catch (error) {
     console.error('Error rendering player:', error);
@@ -190,7 +255,7 @@ function generatePlayerHTML({ embedUrl, isLive, title, useHls }) {
   const liveActions = isLive
     ? `
             <button id="toggle-danmaku-btn" class="player-secondary-btn active" type="button" aria-pressed="true">
-              <span class="btn-icon" aria-hidden="true">💬</span><span class="btn-label">弾幕 ON</span>
+              <span class="btn-icon" aria-hidden="true">💬</span><span class="btn-label">${BUTTON_LABELS.DANMAKU_ON}</span>
             </button>`
     : '';
 
@@ -199,6 +264,11 @@ function generatePlayerHTML({ embedUrl, isLive, title, useHls }) {
             <button id="switch-player-mode-btn" class="player-secondary-btn" type="button">
               <span class="btn-icon" aria-hidden="true">⇄</span><span class="btn-label">${useHls ? '埋め込みに切替' : 'HLSに切替'}</span>
             </button>`
+    : '';
+
+  // チャットの接続状態。空のときは hidden にして場所を取らせない。
+  const chatStatus = isLive
+    ? '<span id="chat-status" class="chat-status" role="status" aria-live="polite" hidden></span>'
     : '';
 
   // 弾幕は流れるコメントの視覚演出であり、ATには読ませない
@@ -233,18 +303,19 @@ function generatePlayerHTML({ embedUrl, isLive, title, useHls }) {
       <div class="player-main">
         <div class="player-status-bar">
           <button id="back-btn" class="back-button" type="button">
-            <span class="btn-icon" aria-hidden="true">←</span><span class="btn-label">一覧に戻る</span>
+            <span class="btn-icon" aria-hidden="true">←</span><span class="btn-label">${BUTTON_LABELS.BACK}</span>
           </button>
           <span class="player-panel-status" role="status" aria-live="polite">${statusLabel}</span>
+          ${chatStatus}
           <div class="player-fallback-actions">${liveActions}${switchModeBtn}
             <button id="add-split-btn" class="player-secondary-btn" type="button">
               <span class="btn-icon" aria-hidden="true">⊞</span><span class="btn-label">2画面に追加</span>
             </button>
             <button id="reload-player-btn" class="player-secondary-btn" type="button">
-              <span class="btn-icon" aria-hidden="true">↻</span><span class="btn-label">再読込</span>
+              <span class="btn-icon" aria-hidden="true">↻</span><span class="btn-label">${BUTTON_LABELS.RELOAD_PLAYER}</span>
             </button>
             <button id="open-in-browser-btn" class="player-fallback-open-btn" type="button">
-              <span class="btn-icon" aria-hidden="true">↗</span><span class="btn-label">ブラウザで開く</span>
+              <span class="btn-icon" aria-hidden="true">↗</span><span class="btn-label">${BUTTON_LABELS.OPEN_BROWSER}</span>
             </button>
           </div>
         </div>
@@ -259,15 +330,20 @@ function generatePlayerHTML({ embedUrl, isLive, title, useHls }) {
   `;
 }
 
-function generateSplitPlayerHTML(primaryVideo, secondaryVideo) {
-  const panels = [primaryVideo, secondaryVideo]
-    .map(
-      (video, index) => `
-        <section class="split-player-panel" data-split-index="${index}">
-          <h3 class="split-player-title">${escapeHTML(video.title)}</h3>
-          <div class="player-embed-wrap">
-            <div class="player-embed-frame">
-              <iframe
+function generateSplitPlayerHTML(entries) {
+  const panels = entries
+    .map(({ video, streamUrl }, index) => {
+      // 配信中で HLS が取れたパネルは単一プレイヤーと同じネイティブ再生にする。
+      // 以前は 2画面だけ常に埋め込みで、画質も安定性も単一プレイヤーに劣った。
+      const media = streamUrl
+        ? `<video
+                class="native-player split-player-video"
+                data-split-index="${index}"
+                controls
+                autoplay
+                playsinline
+              ></video>`
+        : `<iframe
                 class="split-player-iframe"
                 data-split-index="${index}"
                 title="${escapeAttribute(video.title || '')} - YouTubeプレイヤー"
@@ -276,25 +352,34 @@ function generateSplitPlayerHTML(primaryVideo, secondaryVideo) {
                 referrerpolicy="strict-origin-when-cross-origin"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                 allowfullscreen>
-              </iframe>
+              </iframe>`;
+
+      return `
+        <section class="split-player-panel" data-split-index="${index}">
+          <h3 class="split-player-title">${escapeHTML(video.title)}</h3>
+          <div class="player-embed-wrap">
+            <div class="player-embed-frame">
+              ${media}
             </div>
           </div>
           <div class="player-status-bar split-player-status-bar">
-            <span class="player-panel-status" role="status" aria-live="polite">YouTube 埋め込み...</span>
+            <span class="player-panel-status" role="status" aria-live="polite">${
+              streamUrl ? 'HLS ネイティブ再生中' : 'YouTube 埋め込み...'
+            }</span>
             <div class="player-fallback-actions">
-              <button class="player-secondary-btn split-reload-btn" type="button" data-split-index="${index}">再読込</button>
-              <button class="player-fallback-open-btn split-open-btn" type="button" data-split-index="${index}">ブラウザで開く</button>
+              <button class="player-secondary-btn split-reload-btn" type="button" data-split-index="${index}">${BUTTON_LABELS.RELOAD_PLAYER}</button>
+              <button class="player-fallback-open-btn split-open-btn" type="button" data-split-index="${index}">${BUTTON_LABELS.OPEN_BROWSER}</button>
             </div>
           </div>
         </section>
-      `,
-    )
+      `;
+    })
     .join('');
 
   return `
     <div class="split-player-toolbar">
       <button id="back-btn" class="back-button" type="button">
-        <span class="btn-icon" aria-hidden="true">←</span><span class="btn-label">一覧に戻る</span>
+        <span class="btn-icon" aria-hidden="true">←</span><span class="btn-label">${BUTTON_LABELS.BACK}</span>
       </button>
       <button id="exit-split-btn" class="player-secondary-btn" type="button">
         <span class="btn-icon" aria-hidden="true">⊟</span><span class="btn-label">1画面に戻す</span>
@@ -313,12 +398,22 @@ async function renderSplitPlayer(primaryVideo, secondaryVideo) {
   }
 
   try {
-    setPlayerHTML(generateSplitPlayerHTML(primaryVideo, secondaryVideo));
+    const videos = [primaryVideo, secondaryVideo];
+    // 2 本まとめて解決する。直列だと 2 本目の表示が 1 本目の待ち時間ぶん遅れる。
+    const streamUrls = await Promise.all(videos.map(resolveStreamUrl));
+    const entries = videos.map((video, index) => ({
+      video,
+      streamUrl: streamUrls[index],
+    }));
+
+    setPlayerHTML(generateSplitPlayerHTML(entries));
     // 2画面はパネルごとに高さを持つので単一プレイヤー用の追従は止める
     stopChromeHeightTracking();
     updatePlayerVideoTitle('2画面表示');
+    // 弾幕は 2 面に重ねると互いに読めなくなるため 2画面では出さない。
+    // 概要欄も同じ理由でパネルごとには出さない。
     hideDescriptionContainer();
-    setupSplitPlayerEventHandlers([primaryVideo, secondaryVideo]);
+    setupSplitPlayerEventHandlers(entries);
     focusPlayerEntry();
   } catch (error) {
     console.error('Error rendering split player:', error);
@@ -350,52 +445,28 @@ function setupPlayerEventHandlers({ videoId, title, watchUrl, embedUrl, isLive, 
 
   // HLS再生の初期化
   if (useHls && videoEl && streamUrl) {
-    if (window.Hls && window.Hls.isSupported()) {
-      const hls = new window.Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 90,
-      });
-      activeHlsInstances.push(hls);
-      hls.loadSource(streamUrl);
-      hls.attachMedia(videoEl);
-
-      hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-        if (statusEl) statusEl.textContent = 'HLS ネイティブ再生中 (高画質・ABR)';
-        videoEl.play().catch((err) => console.warn('Autoplay prevented', err));
-      });
-
-      hls.on(window.Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          console.warn('Fatal HLS error, falling back to iframe', data);
-          if (statusEl) statusEl.textContent = 'HLS エラーのため埋め込みに切替中...';
-          renderPlayer(videoId, title, isLive, true);
-        }
-      });
-    } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-      videoEl.src = streamUrl;
-      videoEl.addEventListener('loadedmetadata', () => {
-        if (statusEl) statusEl.textContent = 'HLS ネイティブ再生中';
-        videoEl.play().catch((err) => console.warn('Autoplay prevented', err));
-      });
-      videoEl.addEventListener('error', () => {
-        console.warn('Native HLS error, falling back to iframe');
+    attachHlsPlayback({
+      videoEl,
+      statusEl,
+      streamUrl,
+      onFatal: () => {
+        if (statusEl) statusEl.textContent = 'HLS エラーのため埋め込みに切替中...';
         renderPlayer(videoId, title, isLive, true);
-      });
-    }
+      },
+    });
   }
 
   // 埋め込み iframe のイベント
   if (iframeEl) {
     iframeEl.addEventListener('load', () => {
       if (statusEl) {
-        statusEl.textContent = '埋め込みプレイヤーを表示しました。';
+        statusEl.textContent = MESSAGES.INFO.PLAYER_LOADED;
       }
     });
 
     iframeEl.addEventListener('error', () => {
       if (statusEl) {
-        statusEl.textContent = 'プレイヤーの読み込みに失敗しました。';
+        statusEl.textContent = MESSAGES.INFO.PLAYER_RELOAD_FAILED;
       }
     });
   }
@@ -407,7 +478,7 @@ function setupPlayerEventHandlers({ videoId, title, watchUrl, embedUrl, isLive, 
         renderPlayer(videoId, title, isLive, false);
       } else if (iframeEl) {
         iframeEl.src = embedUrl;
-        if (statusEl) statusEl.textContent = 'プレイヤーを再読込中...';
+        if (statusEl) statusEl.textContent = MESSAGES.INFO.PLAYER_RELOADING;
       }
     });
   }
@@ -431,34 +502,74 @@ function setupPlayerEventHandlers({ videoId, title, watchUrl, embedUrl, isLive, 
 
   if (addSplitBtn) {
     addSplitBtn.addEventListener('click', () => {
-      state.startSplitSelection({ videoId, title, isLive });
+      beginSplitSelection({ videoId, title, isLive });
       closePlayer();
-      showToast('2本目の動画を選んでください。');
     });
   }
 }
 
-function setupSplitPlayerEventHandlers(videos) {
+function setupSplitPlayerEventHandlers(entries) {
   document.querySelectorAll('.split-player-panel').forEach((panel) => {
     const index = Number(panel.dataset.splitIndex);
     const iframe = panel.querySelector('.split-player-iframe');
+    const videoEl = panel.querySelector('.split-player-video');
     const statusEl = panel.querySelector('.player-panel-status');
     const reloadBtn = panel.querySelector('.split-reload-btn');
     const openBtns = panel.querySelectorAll('.split-open-btn');
-    const video = videos[index];
+    const { video, streamUrl } = entries[index];
+
+    if (videoEl && streamUrl) {
+      attachHlsPlayback({
+        videoEl,
+        statusEl,
+        streamUrl,
+        onFatal: () => {
+          // このパネルだけ埋め込みへ落とす。もう一方の再生は止めない。
+          if (statusEl) statusEl.textContent = 'HLS エラーのため埋め込みに切替';
+          const frame = panel.querySelector('.player-embed-frame');
+          if (!frame) return;
+          frame.innerHTML = `<iframe
+                class="split-player-iframe"
+                data-split-index="${index}"
+                title="${escapeAttribute(video.title || '')} - YouTubeプレイヤー"
+                src="${getYouTubeEmbedUrl(video.videoId)}"
+                loading="eager"
+                referrerpolicy="strict-origin-when-cross-origin"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowfullscreen></iframe>`;
+        },
+      });
+    }
 
     iframe?.addEventListener('load', () => {
-      if (statusEl) statusEl.textContent = '埋め込みプレイヤーを表示しました。';
+      if (statusEl) statusEl.textContent = MESSAGES.INFO.PLAYER_LOADED;
     });
 
     iframe?.addEventListener('error', () => {
-      if (statusEl) statusEl.textContent = 'プレイヤーの読み込みに失敗しました。';
+      if (statusEl) statusEl.textContent = MESSAGES.INFO.PLAYER_RELOAD_FAILED;
     });
 
     reloadBtn?.addEventListener('click', () => {
-      if (!iframe) return;
-      iframe.src = getYouTubeEmbedUrl(video.videoId);
-      if (statusEl) statusEl.textContent = 'プレイヤーを再読込中...';
+      if (statusEl) statusEl.textContent = MESSAGES.INFO.PLAYER_RELOADING;
+      // HLS のパネルは URL が失効している可能性があるので解決し直す
+      if (videoEl) {
+        resolveStreamUrl(video).then((freshUrl) => {
+          if (!freshUrl) {
+            if (statusEl) statusEl.textContent = '配信が見つかりません。';
+            return;
+          }
+          attachHlsPlayback({
+            videoEl,
+            statusEl,
+            streamUrl: freshUrl,
+            onFatal: () => {
+              if (statusEl) statusEl.textContent = 'HLS の再読込に失敗しました。';
+            },
+          });
+        });
+        return;
+      }
+      if (iframe) iframe.src = getYouTubeEmbedUrl(video.videoId);
     });
 
     openBtns.forEach((openBtn) => {
@@ -475,8 +586,11 @@ function setupSplitPlayerEventHandlers(videos) {
   });
 
   document.getElementById('exit-split-btn')?.addEventListener('click', () => {
-    const [primaryVideo] = videos;
-    playVideo(primaryVideo.videoId, primaryVideo.title, primaryVideo.isLive);
+    const primaryVideo = entries[0].video;
+    // playVideo を通すと showPlayer とフォーカス移動をもう一度やり直すことに
+    // なる。すでにプレイヤーは開いているので、描画だけ差し替える。
+    state.setCurrentPlayerVideos([primaryVideo]);
+    renderPlayer(primaryVideo.videoId, primaryVideo.title, primaryVideo.isLive);
   });
 }
 
@@ -496,10 +610,32 @@ function setupDanmakuToggle(toggleBtn) {
   toggleBtn.addEventListener('click', () => {
     isDanmakuEnabled = !isDanmakuEnabled;
     toggleBtn.classList.toggle('active', isDanmakuEnabled);
-    label.textContent = isDanmakuEnabled ? '弾幕 ON' : '弾幕 OFF';
+    label.textContent = isDanmakuEnabled
+      ? BUTTON_LABELS.DANMAKU_ON
+      : BUTTON_LABELS.DANMAKU_OFF;
     toggleBtn.setAttribute('aria-pressed', String(isDanmakuEnabled));
     danmakuContainer.style.display = isDanmakuEnabled ? 'block' : 'none';
   });
+}
+
+// 接続状態を利用者向けの文言にする。切断が黙って起きると、弾幕が流れない
+// 理由が「配信にコメントが無い」のか「切れた」のか区別できない。
+const CHAT_STATUS_LABELS = {
+  connecting: 'チャット接続中…',
+  open: '',
+  reconnecting: 'チャット再接続中…',
+  failed: 'チャットが切断されました',
+};
+
+function updateChatStatus(status, detail) {
+  const element = document.getElementById('chat-status');
+  if (!element) return;
+
+  const base = CHAT_STATUS_LABELS[status] ?? '';
+  const text = base && detail ? `${base}（${detail}）` : base;
+  element.textContent = text;
+  element.hidden = !text;
+  element.classList.toggle('chat-status-failed', status === 'failed');
 }
 
 /**
@@ -509,31 +645,22 @@ function setupLiveChat(videoId) {
   const danmakuContainer = document.getElementById('danmaku-container');
   if (!danmakuContainer) return;
 
-  // 既存のWebSocketをクローズ
-  if (state.activeChatSocket) {
-    closeWebSocket(state.activeChatSocket);
-  }
+  // 既存の接続を閉じる（再接続タイマーごと畳む）
+  state.activeChatSocket?.close();
 
-  // 新しいWebSocketを作成
-  let socket;
-  socket = createLiveChatWebSocket(videoId, {
+  const connection = connectLiveChat(videoId, {
     onMessage: (data) => {
       handleDanmakuMessage(data, danmakuContainer);
     },
-    onError: (error) => {
-      console.error('Live chat error:', error);
-      showToast('弾幕サーバーへの接続に失敗しました。');
-    },
-    onClose: () => {
-      if (state.activeChatSocket === socket) {
-        state.activeChatSocket = null;
+    onStatus: (status, detail) => {
+      updateChatStatus(status, detail);
+      if (status === 'failed') {
+        showToast(MESSAGES.ERROR.FAILED_CHAT, 'error');
       }
     },
   });
 
-  if (socket) {
-    state.activeChatSocket = socket;
-  }
+  state.activeChatSocket = connection;
 }
 
 const DANMAKU_MAX_ON_SCREEN = 40;
@@ -607,7 +734,7 @@ async function fetchAndDisplayDescription(videoId) {
   descContainer.innerHTML = `
     <div class="description-status">
       <div class="spinner"></div>
-      <p>概要欄を読み込み中...</p>
+      <p>${MESSAGES.INFO.FETCHING_DESCRIPTION}</p>
     </div>
   `;
 
@@ -616,7 +743,7 @@ async function fetchAndDisplayDescription(videoId) {
 
     if (!description) {
       descContainer.innerHTML =
-        '<p class="description-status">概要欄は提供されていません。</p>';
+        `<p class="description-status">${MESSAGES.INFO.NO_DESCRIPTION}</p>`;
       return;
     }
 
@@ -624,7 +751,7 @@ async function fetchAndDisplayDescription(videoId) {
     descContainer.innerHTML = `
       <h3 class="sr-only">動画概要</h3>
       <div id="video-description" class="collapsed"></div>
-      <button id="toggle-description-btn" class="description-toggle-btn" type="button" aria-expanded="false" aria-controls="video-description">もっと見る</button>
+      <button id="toggle-description-btn" class="description-toggle-btn" type="button" aria-expanded="false" aria-controls="video-description">${BUTTON_LABELS.MORE}</button>
     `;
 
     const descEl = document.getElementById('video-description');
@@ -639,11 +766,11 @@ async function fetchAndDisplayDescription(videoId) {
         const isCollapsed = descEl.classList.contains('collapsed');
         if (isCollapsed) {
           descEl.classList.remove('collapsed');
-          toggleBtn.textContent = '一部を表示';
+          toggleBtn.textContent = BUTTON_LABELS.LESS;
           toggleBtn.setAttribute('aria-expanded', 'true');
         } else {
           descEl.classList.add('collapsed');
-          toggleBtn.textContent = 'もっと見る';
+          toggleBtn.textContent = BUTTON_LABELS.MORE;
           toggleBtn.setAttribute('aria-expanded', 'false');
         }
       });
@@ -651,8 +778,89 @@ async function fetchAndDisplayDescription(videoId) {
   } catch (error) {
     console.error('Error fetching description:', error);
     descContainer.innerHTML =
-      '<p class="description-status error">概要欄の読み込みに失敗しました。</p>';
+      `<p class="description-status error">${MESSAGES.ERROR.FAILED_DESCRIPTION}</p>`;
   }
+
+  appendCommentsSection(descContainer, videoId);
+}
+
+// 1 回目に取る件数と、「さらに読み込む」で取る件数。
+// サーバーは動画ごとに最大件数を 1 回だけキャッシュして切り出すので、
+// 2 回目の要求はキャッシュヒットで安い。
+const COMMENTS_INITIAL_LIMIT = 20;
+const COMMENTS_EXPANDED_LIMIT = 100;
+
+/**
+ * コメント欄を用意する
+ *
+ * 自動では取りに行かない。1 件あたり yt-dlp のフル抽出が走って数秒かかり、
+ * 抽出系のレート制限（既定 20/分）も共有しているため、再生するたびに
+ * 取りに行くと待たされるうえ枠を食い潰す。押されたときだけ取る。
+ */
+function appendCommentsSection(descContainer, videoId) {
+  const section = document.createElement('section');
+  section.className = 'comments-section';
+  section.innerHTML = `
+    <h3 class="comments-heading">コメント</h3>
+    <div id="comments-body" class="comments-body" aria-live="polite"></div>
+    <button id="load-comments-btn" class="description-toggle-btn" type="button">
+      コメントを読み込む
+    </button>
+  `;
+  descContainer.appendChild(section);
+
+  const body = section.querySelector('#comments-body');
+  const button = section.querySelector('#load-comments-btn');
+
+  const load = async (limit) => {
+    button.disabled = true;
+    button.textContent = '読み込み中...';
+    try {
+      const payload = await fetchVideoComments(videoId, limit);
+      const comments = Array.isArray(payload?.results) ? payload.results : [];
+
+      if (comments.length === 0) {
+        body.innerHTML =
+          '<p class="description-status">コメントはありません。</p>';
+        button.hidden = true;
+        return;
+      }
+
+      body.innerHTML = comments.map(renderCommentHTML).join('');
+
+      // 取れた件数が要求と同じなら、まだ続きがある可能性がある
+      if (limit < COMMENTS_EXPANDED_LIMIT && comments.length >= limit) {
+        button.disabled = false;
+        button.textContent = 'さらに読み込む';
+        button.onclick = () => load(COMMENTS_EXPANDED_LIMIT);
+      } else {
+        button.hidden = true;
+      }
+    } catch (error) {
+      console.error('Error fetching comments:', error);
+      body.innerHTML =
+        '<p class="description-status error">コメントの読み込みに失敗しました。</p>';
+      button.disabled = false;
+      button.textContent = '再試行';
+    }
+  };
+
+  button.onclick = () => load(COMMENTS_INITIAL_LIMIT);
+}
+
+function renderCommentHTML(comment) {
+  const author = escapeHTML(comment.author || '名無し');
+  const text = escapeHTML(comment.text || '');
+  const thumbnail = escapeAttribute(comment.author_thumbnail || '');
+  return `
+    <article class="comment">
+      <img class="comment-avatar" src="${thumbnail}" alt="" loading="lazy" width="32" height="32" />
+      <div class="comment-body">
+        <p class="comment-author">${author}</p>
+        <p class="comment-text">${text}</p>
+      </div>
+    </article>
+  `;
 }
 
 /**
@@ -705,18 +913,54 @@ function appendLinkedText(target, text) {
 }
 
 /**
+ * 2画面の 1 本目を選んだ状態に入る
+ *
+ * 状態とバナーを必ず一緒に動かす。片方だけ変えると「選択中なのに画面に
+ * 何も出ていない」状態が作れてしまう。
+ */
+export function beginSplitSelection(video) {
+  state.startSplitSelection(video);
+  updateSplitSelectionBanner(video);
+  showToast('2本目の動画を選んでください。');
+}
+
+/**
+ * 2画面の選択を取り消す
+ */
+export function cancelSplitSelection() {
+  if (!state.pendingSplitPrimary) return;
+  state.clearSplitSelection();
+  updateSplitSelectionBanner(null);
+  showToast('2画面表示をやめました。');
+}
+
+function endSplitSelection() {
+  state.clearSplitSelection();
+  updateSplitSelectionBanner(null);
+}
+
+/**
  * ビデオ再生を開始
  */
 export function playVideo(videoId, title, isLive) {
   if (!videoId) {
     console.error('No video ID provided');
-    showToast('ビデオIDが指定されていません。');
+    showToast(MESSAGES.ERROR.INVALID_VIDEO_ID);
     return;
   }
 
-  // 既存のWebSocketをクローズ
+  const primaryVideo = state.pendingSplitPrimary;
+
+  // 同じ動画を 2 枠に並べても意味が無い。以前はここで単一プレイヤーに
+  // 落ちてしまい、選択が無反応のまま消えていた。選択は保持して知らせる。
+  if (primaryVideo && primaryVideo.videoId === videoId) {
+    showToast('2本目は別の動画を選んでください。', 'error');
+    return;
+  }
+
+  // 既存の接続を閉じる（再接続タイマーごと）
   if (state.activeChatSocket) {
-    closeWebSocket(state.activeChatSocket);
+    state.activeChatSocket.close();
     state.activeChatSocket = null;
   }
 
@@ -728,16 +972,15 @@ export function playVideo(videoId, title, isLive) {
   document.getElementById('main-content')?.focus();
 
   const nextVideo = { videoId, title, isLive };
-  const primaryVideo = state.pendingSplitPrimary;
 
-  if (primaryVideo && primaryVideo.videoId !== videoId) {
-    state.clearSplitSelection();
+  if (primaryVideo) {
+    endSplitSelection();
     state.setCurrentPlayerVideos([primaryVideo, nextVideo]);
     renderSplitPlayer(primaryVideo, nextVideo);
     return;
   }
 
-  state.clearSplitSelection();
+  endSplitSelection();
   state.setCurrentPlayerVideos([nextVideo]);
   renderPlayer(videoId, title, isLive);
 }
@@ -748,7 +991,7 @@ export function playVideo(videoId, title, isLive) {
 export function closePlayer() {
   // WebSocketをクローズ
   if (state.activeChatSocket) {
-    closeWebSocket(state.activeChatSocket);
+    state.activeChatSocket.close();
     state.activeChatSocket = null;
   }
 

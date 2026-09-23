@@ -57,6 +57,11 @@ export function initDomCache() {
     settingsCurrentBackend: document.getElementById(
       "settings-current-backend",
     ),
+    splitSelectionBanner: document.getElementById("split-selection-banner"),
+    splitSelectionText: document.getElementById("split-selection-text"),
+    splitSelectionCancelBtn: document.getElementById(
+      "split-selection-cancel-btn",
+    ),
     settingsSaveBtn: document.getElementById("settings-save-btn"),
 
     // ===== メインコンテナ要素 =====
@@ -77,7 +82,8 @@ export function initDomCache() {
     // (初期化時点では存在せず、再描画で作り直されるので常に null になる)
 
     // ===== 通知要素 =====
-    toastContainer: createToastContainer(),
+    toastContainer: createToastContainer("polite"),
+    toastContainerAssertive: createToastContainer("assertive"),
   };
 
   return domCache;
@@ -85,16 +91,24 @@ export function initDomCache() {
 
 /**
  * トースト通知コンテナを作成または取得
+ *
+ * 緊急度ごとに別のライブリージョンを持つ。1 つの領域の aria-live を
+ * 読み上げの直前に polite ↔ assertive で書き換える実装だったが、
+ * 描画済みのライブリージョンの aria-live 変更は複数のスクリーンリーダーで
+ * 反映が不確実で、読み上げごと落ちることがある。
+ *
+ * @param {"polite"|"assertive"} politeness
  * @returns {Element}
  */
-function createToastContainer() {
-  let container = document.getElementById("toast-container");
+function createToastContainer(politeness) {
+  const id = `toast-container-${politeness}`;
+  let container = document.getElementById(id);
   if (!container) {
     container = document.createElement("div");
-    container.id = "toast-container";
+    container.id = id;
     container.className = "toast-container";
-    container.setAttribute("role", "status");
-    container.setAttribute("aria-live", "polite");
+    container.setAttribute("role", politeness === "assertive" ? "alert" : "status");
+    container.setAttribute("aria-live", politeness);
     document.body.appendChild(container);
   }
   return container;
@@ -302,6 +316,26 @@ export function updateFeedStatus({ status = "loading", label, summary }) {
 }
 
 /**
+ * 「2本目を選んでください」バナーの表示を切り替える
+ * @param {?{title: string}} primaryVideo 選択中の1本目。null で非表示
+ */
+export function updateSplitSelectionBanner(primaryVideo) {
+  const banner = getDOM("splitSelectionBanner");
+  const text = getDOM("splitSelectionText");
+  if (!banner) return;
+
+  if (!primaryVideo) {
+    banner.hidden = true;
+    return;
+  }
+
+  if (text) {
+    text.textContent = `「${primaryVideo.title || "選択した動画"}」と並べる2本目を選んでください`;
+  }
+  banner.hidden = false;
+}
+
+/**
  * 一覧に戻ったとき、元のビデオカードへフォーカスを戻す
  * @param {string} videoId
  */
@@ -475,15 +509,17 @@ export function showToast(
   type = "info",
   duration = UI_CONSTANTS.TOAST_DURATION,
 ) {
-  const container = getDOM("toastContainer");
+  // エラーだけ assertive の領域へ入れる。領域そのものを分けているので、
+  // 読み上げ直前に aria-live を書き換える必要がない。
+  const container = getDOM(
+    type === "error" ? "toastContainerAssertive" : "toastContainer",
+  );
   if (!container) return;
 
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
   toast.textContent = message || "";
 
-  // ライブリージョンはコンテナ側に一本化（入れ子のrole="alert"は二重読み上げの原因）
-  container.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
   container.appendChild(toast);
 
   // 指定時間後に削除

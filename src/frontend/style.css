@@ -285,18 +285,6 @@ body {
     outline-offset: var(--focus-ring-offset);
 }
 
-.sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border-width: 0;
-}
-
 /* ========================================
    🎯 基本インタラクティブ要素
    ======================================== */
@@ -912,6 +900,27 @@ main {
     white-space: nowrap;
 }
 
+/* 2画面の 1 本目を選んだ状態。トーストだけでは、タブを切り替えたあとに
+   「まだ2本目を待っている」ことが画面から分からなかった。 */
+.split-selection-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--spacing-md);
+    margin: 0 0 var(--spacing-md);
+    padding: var(--spacing-md) var(--spacing-lg);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius-md);
+    background: var(--bg-solid);
+}
+
+.split-selection-text {
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 600;
+}
+
 .active-filters {
     display: flex;
     align-items: center;
@@ -953,6 +962,17 @@ main {
 .clear-filters-btn:hover {
     background: var(--control-fill);
     color: var(--primary-text);
+}
+
+/* 段階描画の番兵。グリッドの子なので、規則が無いと 1 マスぶんの空白を
+   占めてカードの並びをずらす。列いっぱいに寝かせて高さを持たせない。 */
+.grid-sentinel {
+    grid-column: 1 / -1;
+    width: 100%;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    pointer-events: none;
 }
 
 .video-grid {
@@ -1472,6 +1492,18 @@ main {
     font-weight: 500;
 }
 
+/* ライブチャットの接続状態。切断が黙って起きると、弾幕が流れない理由が
+   「コメントが無い」のか「切れた」のか区別できない。 */
+.chat-status {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.chat-status-failed {
+    color: var(--error-text);
+}
+
 .player-fallback-actions {
     display: flex;
     flex-wrap: wrap;
@@ -1640,6 +1672,67 @@ main {
     flex-shrink: 0;
 }
 
+/* コメント欄。自動では取りに行かない（yt-dlp のフル抽出が走るため）ので、
+   読み込みボタンと結果がここに並ぶ。 */
+.comments-section {
+    margin-top: var(--spacing-lg);
+    padding-top: var(--spacing-lg);
+    border-top: 1px solid var(--border-hairline);
+}
+
+.comments-heading {
+    margin: 0 0 var(--spacing-md);
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+    font-weight: 700;
+}
+
+.comments-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+}
+
+.comments-body:not(:empty) {
+    margin-bottom: var(--spacing-md);
+}
+
+.comment {
+    display: flex;
+    gap: var(--spacing-md);
+    align-items: flex-start;
+}
+
+.comment-avatar {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--bg-hover);
+}
+
+.comment-body {
+    min-width: 0;
+}
+
+.comment-author {
+    margin: 0 0 2px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.comment-text {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    /* コメントには改行と長いURLが混ざる */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 .description-toggle-btn {
     align-self: flex-start;
     background: var(--bg-base);
@@ -1659,7 +1752,9 @@ main {
 /* ========================================
    🔔 トースト通知コンポーネント
    ======================================== */
-.toast-container {
+/* 位置はスタック側が持つ。中の 2 つ（assertive / polite）は
+   それぞれ独立したライブリージョンで、見た目は 1 列に見える。 */
+.toast-stack {
     position: fixed;
     bottom: var(--spacing-xl);
     right: var(--spacing-xl);
@@ -1668,6 +1763,12 @@ main {
     gap: var(--spacing-md);
     z-index: 9999;
     pointer-events: none;
+}
+
+.toast-container {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
 }
 
 .toast {
@@ -1858,6 +1959,8 @@ main {
     display: none !important;
 }
 
+/* 定義はここだけ。以前は基本セクションにも同じものがあり、
+   !important の有無で優先度が違う 2 つが並んでいた。 */
 .sr-only {
     position: absolute !important;
     width: 1px !important;
@@ -2137,7 +2240,7 @@ main {
         font-size: 1rem;
     }
 
-    .toast-container {
+    .toast-stack {
         right: var(--spacing-sm);
         bottom: var(--spacing-sm);
         left: var(--spacing-sm);
@@ -2218,7 +2321,7 @@ main {
     header,
     .sidebar,
     .sidebar-overlay,
-    .toast-container,
+    .toast-stack,
     #refresh-btn {
         display: none;
     }

@@ -189,6 +189,26 @@
                 </button>
             </section>
 
+            <!-- 「2本目を選んでください」状態を可視化する。以前はトーストを
+                 1 回出すだけで、タブ切り替えやフィルタ変更を跨いで状態が
+                 残っていることが画面から分からなかった。 -->
+            <section
+                id="split-selection-banner"
+                class="split-selection-banner"
+                role="status"
+                aria-live="polite"
+                hidden
+            >
+                <span id="split-selection-text" class="split-selection-text"></span>
+                <button
+                    id="split-selection-cancel-btn"
+                    class="player-secondary-btn"
+                    type="button"
+                >
+                    2画面をやめる
+                </button>
+            </section>
+
             <section
                 id="official-container"
                 class="video-grid"
@@ -304,13 +324,24 @@
             </section>
         </main>
 
-        <!-- トースト通知コンテナ -->
-        <div
-            class="toast-container"
-            id="toast-container"
-            role="status"
-            aria-live="polite"
-        ></div>
+        <!-- トースト通知。緊急度ごとに別のライブリージョンにする。
+             1 つの領域の aria-live を読み上げ直前に書き換える実装は、
+             複数のスクリーンリーダーで反映が不確実だった。
+             位置は外側のスタックが持つので見た目は 1 列のまま。 -->
+        <div class="toast-stack">
+            <div
+                class="toast-container"
+                id="toast-container-assertive"
+                role="alert"
+                aria-live="assertive"
+            ></div>
+            <div
+                class="toast-container"
+                id="toast-container-polite"
+                role="status"
+                aria-live="polite"
+            ></div>
+        </div>
 
         <div
             id="settings-modal"
