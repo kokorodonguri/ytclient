@@ -1,0 +1,67 @@
+# backend/ はパッケージ化されておらず、config / domain / application / interfaces を
+# トップレベル名で import する（本番は配置先ディレクトリへ平置きする構成）。
+# そのため pythonpath に backend/ を通す。
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["backend"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    # starlette.testclient が httpx2 を勧める警告。import した場所で出るため
+    # モジュール指定では拾えず、メッセージで抑える。移行は別途。
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:",
+]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+extend-exclude = ["src/frontend/vendor", "build_temp", "dist", "android"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "RUF",  # ruff 固有
+]
+ignore = [
+    # 例外の再送出で from を強制しない（設定エラーは意図的に元例外を切る）
+    "B904",
+    # このリポジトリのコメントと docstring は日本語で書く。全角の括弧・
+    # コロン・感嘆符を「紛らわしい」と警告されても直す先が無いので落とす。
+    # 文字列リテラル（RUF001）も、UI 文言に全角が入るのは正しい。
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# テストは内部状態を意図的に触る
+"tests/*" = ["SLF001"]
+
+[tool.ruff.lint.isort]
+# backend/ 内のトップレベル名は自プロジェクト扱いにする
+known-first-party = [
+    "config",
+    "domain",
+    "application",
+    "infrastructure",
+    "interfaces",
+    "main",
+]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["backend"]
+mypy_path = "backend"
+# yt_dlp / pytchat は型情報を持たない
+ignore_missing_imports = true
+# 注釈の無い関数の本体も検査する。既存コードはこれを付けても通る。
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true

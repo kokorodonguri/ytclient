@@ -53,11 +53,14 @@ export function initDomCache() {
     settingsCloseBtn: document.getElementById("settings-close-btn"),
     settingsCancelBtn: document.getElementById("settings-cancel-btn"),
     backendUrlInput: document.getElementById("backend-url-input"),
-    startLocalBackendCheck: document.getElementById(
-      "start-local-backend-check",
-    ),
+    apiKeyInput: document.getElementById("api-key-input"),
     settingsCurrentBackend: document.getElementById(
       "settings-current-backend",
+    ),
+    splitSelectionBanner: document.getElementById("split-selection-banner"),
+    splitSelectionText: document.getElementById("split-selection-text"),
+    splitSelectionCancelBtn: document.getElementById(
+      "split-selection-cancel-btn",
     ),
     settingsSaveBtn: document.getElementById("settings-save-btn"),
 
@@ -75,10 +78,12 @@ export function initDomCache() {
     playerContainer: document.getElementById("player-container"),
     playerVideoTitle: document.getElementById("player-video-title"),
     descriptionContainer: document.getElementById("description-container"),
-    backBtn: document.getElementById("back-btn"),
+    // backBtn は操作列内に動的生成されるため、ここではキャッシュしない
+    // (初期化時点では存在せず、再描画で作り直されるので常に null になる)
 
     // ===== 通知要素 =====
-    toastContainer: createToastContainer(),
+    toastContainer: createToastContainer("polite"),
+    toastContainerAssertive: createToastContainer("assertive"),
   };
 
   return domCache;
@@ -86,16 +91,24 @@ export function initDomCache() {
 
 /**
  * トースト通知コンテナを作成または取得
+ *
+ * 緊急度ごとに別のライブリージョンを持つ。1 つの領域の aria-live を
+ * 読み上げの直前に polite ↔ assertive で書き換える実装だったが、
+ * 描画済みのライブリージョンの aria-live 変更は複数のスクリーンリーダーで
+ * 反映が不確実で、読み上げごと落ちることがある。
+ *
+ * @param {"polite"|"assertive"} politeness
  * @returns {Element}
  */
-function createToastContainer() {
-  let container = document.getElementById("toast-container");
+function createToastContainer(politeness) {
+  const id = `toast-container-${politeness}`;
+  let container = document.getElementById(id);
   if (!container) {
     container = document.createElement("div");
-    container.id = "toast-container";
+    container.id = id;
     container.className = "toast-container";
-    container.setAttribute("role", "status");
-    container.setAttribute("aria-live", "polite");
+    container.setAttribute("role", politeness === "assertive" ? "alert" : "status");
+    container.setAttribute("aria-live", politeness);
     document.body.appendChild(container);
   }
   return container;
@@ -163,12 +176,6 @@ export function closeSidebar() {
   toggleSidebar(false);
 }
 
-/**
- * サイドバーを開く
- */
-export function openSidebar() {
-  toggleSidebar(true);
-}
 
 /**
  * サイドバーの選択チャンネルテキストを更新
@@ -256,7 +263,16 @@ export function closeAllDropdowns() {
   // aria-expanded属性を更新
   document.querySelectorAll('[aria-haspopup="listbox"]').forEach((el) => {
     el.setAttribute("aria-expanded", "false");
+    // 外側クリックで閉じた際に残る stale な選択追従を消す
+    try {
+      el.removeAttribute("aria-activedescendant");
+    } catch {
+      /* no-op: 属性削除の失敗は無視する */
+    }
   });
+  document
+    .querySelectorAll(".dropdown-item.focused")
+    .forEach((el) => removeClass(el, "focused"));
 }
 
 /**
@@ -266,7 +282,15 @@ export function closeAllDropdowns() {
 export function updateGameSelectedText(text) {
   const gameSelectedText = getDOM("gameSelectedText");
   if (gameSelectedText) {
-    gameSelectedText.textContent = text || "";
+    const label = text || "";
+    gameSelectedText.textContent = label;
+    // aria-labelはaccessible nameとして可視テキストを完全に置き換えるため、
+    // 可視テキストを含めないとWCAG 2.5.3 (Label in Name) 違反になる
+    // (音声操作ユーザーが可視ラベルを読み上げても要素を選択できない)
+    gameSelectedText.setAttribute(
+      "aria-label",
+      `ゲームフィルターを選択: ${label}`,
+    );
   }
 }
 
@@ -289,6 +313,51 @@ export function updateFeedStatus({ status = "loading", label, summary }) {
   if (feedSummary) {
     feedSummary.textContent = summary || "";
   }
+}
+
+/**
+ * 「2本目を選んでください」バナーの表示を切り替える
+ * @param {?{title: string}} primaryVideo 選択中の1本目。null で非表示
+ */
+export function updateSplitSelectionBanner(primaryVideo) {
+  const banner = getDOM("splitSelectionBanner");
+  const text = getDOM("splitSelectionText");
+  if (!banner) return;
+
+  if (!primaryVideo) {
+    banner.hidden = true;
+    return;
+  }
+
+  if (text) {
+    text.textContent = `「${primaryVideo.title || "選択した動画"}」と並べる2本目を選んでください`;
+  }
+  banner.hidden = false;
+}
+
+/**
+ * 一覧に戻ったとき、元のビデオカードへフォーカスを戻す
+ * @param {string} videoId
+ */
+export function restoreFocusToCard(videoId) {
+  // 有効なフォーカスが別の場所にあるとき（例: タブ切替時）は奪わない
+  const active = document.activeElement;
+  const playerView = getDOM("playerView");
+  if (
+    active &&
+    active !== document.body &&
+    !(playerView && playerView.contains(active))
+  ) {
+    return;
+  }
+
+  let target = null;
+  if (videoId && typeof CSS !== "undefined" && CSS.escape) {
+    target = document.querySelector(
+      `.video-card[data-video-id="${CSS.escape(videoId)}"]`,
+    );
+  }
+  (target || getDOM("mainContent"))?.focus();
 }
 
 /**
@@ -323,6 +392,10 @@ export function showPlayer() {
   if (playerView) removeClass(playerView, "hidden");
   if (officialContainer) addClass(officialContainer, "hidden");
   if (clipsContainer) addClass(clipsContainer, "hidden");
+
+  // 再生中は映像に高さを譲る。一覧向けの表示を畳み、余白と横幅上限を緩める
+  // 指示は body のクラス 1 つに集約し、実際の見た目は CSS 側で表現する
+  document.body.classList.add("is-player-open");
 }
 
 /**
@@ -337,6 +410,7 @@ export function hidePlayer(mode) {
 
   if (playerView) addClass(playerView, "hidden");
   if (descriptionContainer) addClass(descriptionContainer, "hidden");
+  document.body.classList.remove("is-player-open");
 
   if (mode === "official" && officialContainer) {
     removeClass(officialContainer, "hidden");
@@ -363,6 +437,7 @@ export function updatePlayerVideoTitle(title) {
  * @param {string} html - 設定するHTML
  */
 export function setPlayerHTML(html) {
+  runPlaybackCleanup();
   const playerContainer = getDOM("playerContainer");
   if (playerContainer) {
     playerContainer.innerHTML = html;
@@ -372,7 +447,25 @@ export function setPlayerHTML(html) {
 /**
  * プレイヤーコンテナをクリア
  */
+// プレイヤー DOM を捨てる前に呼ぶ後始末。player.js が hls.js の破棄を登録する。
+// dom.js から player.js を import すると循環するため、登録式にしている。
+let playbackCleanup = null;
+
+export function setPlaybackCleanup(cleanup) {
+  playbackCleanup = typeof cleanup === "function" ? cleanup : null;
+}
+
+function runPlaybackCleanup() {
+  if (!playbackCleanup) return;
+  try {
+    playbackCleanup();
+  } catch (error) {
+    console.warn("Playback cleanup failed", error);
+  }
+}
+
 function clearPlayerContainer() {
+  runPlaybackCleanup();
   const playerContainer = getDOM("playerContainer");
   if (playerContainer) {
     playerContainer.innerHTML = "";
@@ -416,15 +509,17 @@ export function showToast(
   type = "info",
   duration = UI_CONSTANTS.TOAST_DURATION,
 ) {
-  const container = getDOM("toastContainer");
+  // エラーだけ assertive の領域へ入れる。領域そのものを分けているので、
+  // 読み上げ直前に aria-live を書き換える必要がない。
+  const container = getDOM(
+    type === "error" ? "toastContainerAssertive" : "toastContainer",
+  );
   if (!container) return;
 
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
   toast.textContent = message || "";
 
-  // ライブリージョンはコンテナ側に一本化（入れ子のrole="alert"は二重読み上げの原因）
-  container.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
   container.appendChild(toast);
 
   // 指定時間後に削除
@@ -447,27 +542,3 @@ export function showToast(
 export function showErrorToast(message) {
   showToast(message, "error");
 }
-
-export default {
-  initDomCache,
-  getDOM,
-  toggleSidebar,
-  closeSidebar,
-  openSidebar,
-  isSidebarOpen,
-  updateSidebarSelectedChannel,
-  setTabActive,
-  toggleGameOptions,
-  closeAllDropdowns,
-  updateGameSelectedText,
-  updateFeedStatus,
-  getGridContainer,
-  showPlayer,
-  hidePlayer,
-  updatePlayerVideoTitle,
-  setPlayerHTML,
-  showDescriptionContainer,
-  hideDescriptionContainer,
-  showToast,
-  showErrorToast,
-};

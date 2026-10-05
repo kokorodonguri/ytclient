@@ -8,10 +8,13 @@
         default-src 'self';
         img-src 'self' https: data: blob:;
         style-src 'self' 'unsafe-inline';
-        script-src 'self' 'unsafe-eval';
+        script-src 'self';
         connect-src 'self' http: https: ws: wss:;
         frame-src https://www.youtube.com https://*.youtube.com https://www.youtube-nocookie.com https://*.youtube-nocookie.com;
-        media-src 'self' blob:;
+        media-src 'self' blob: https://*.googlevideo.com;
+        object-src 'none';
+        base-uri 'none';
+        form-action 'none';
       "
         />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -21,6 +24,7 @@
         />
         <meta name="theme-color" content="#ec4899" />
         <title>ぶいすぽっ！クライアント</title>
+        <link rel="icon" href="icon.ico" />
         <link rel="stylesheet" href="style.css" />
     </head>
     <body>
@@ -51,7 +55,6 @@
                     type="button"
                     aria-current="page"
                 >
-                    <span class="icon" aria-hidden="true">🏠</span>
                     <span>ホーム (すべて表示)</span>
                 </button>
 
@@ -99,7 +102,7 @@
                     aria-selected="true"
                     aria-controls="official-container"
                 >
-                    <span aria-hidden="true">📺</span> メンバー配信
+                    メンバー配信
                 </button>
                 <button
                     id="tab-clips"
@@ -109,7 +112,7 @@
                     aria-selected="false"
                     aria-controls="clips-container"
                 >
-                    <span aria-hidden="true">✂️</span> 切り抜き
+                    切り抜き
                 </button>
             </nav>
 
@@ -121,7 +124,8 @@
                         type="button"
                         aria-haspopup="listbox"
                         aria-expanded="false"
-                        aria-label="ゲームフィルターを選択"
+                        aria-controls="game-options"
+                        aria-label="ゲームフィルターを選択: すべてのゲーム"
                     >
                         すべてのゲーム
                     </button>
@@ -132,69 +136,8 @@
                         tabindex="-1"
                         aria-labelledby="game-selected-text"
                     >
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-0"
-                            role="option"
-                            aria-selected="true"
-                            data-value=""
-                        >
-                            すべてのゲーム
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-1"
-                            role="option"
-                            aria-selected="false"
-                            data-value="Apex"
-                        >
-                            Apex Legends
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-2"
-                            role="option"
-                            aria-selected="false"
-                            data-value="Valorant"
-                        >
-                            VALORANT
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-3"
-                            role="option"
-                            aria-selected="false"
-                            data-value="スプラ"
-                        >
-                            Splatoon / スプラ
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-4"
-                            role="option"
-                            aria-selected="false"
-                            data-value="Minecraft"
-                        >
-                            Minecraft / マイクラ
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-5"
-                            role="option"
-                            aria-selected="false"
-                            data-value="歌枠"
-                        >
-                            歌枠 / 歌ってみた
-                        </li>
-                        <li
-                            class="dropdown-item"
-                            id="game-opt-6"
-                            role="option"
-                            aria-selected="false"
-                            data-value="雑談"
-                        >
-                            雑談
-                        </li>
+                        <!-- 選択肢は constants.js の GAME_FILTERS から
+                             ui.js が生成する（二重管理を避けるため） -->
                     </ul>
                 </div>
 
@@ -206,17 +149,16 @@
                     aria-label="追加検索ワード"
                 />
                 <button id="refresh-btn" type="button">
-                    <span class="icon" aria-hidden="true">🔄</span>
                     <span>最新を読み込む</span>
                 </button>
                 <button
                     id="settings-btn"
                     class="icon-control-btn"
                     type="button"
-                    aria-label="&#35373;&#23450;"
-                    title="&#35373;&#23450;"
+                    aria-label="設定"
+                    title="設定"
                 >
-                    <span aria-hidden="true">&#9881;</span>
+                    <span aria-hidden="true">⚙</span>
                 </button>
 
             </div>
@@ -225,7 +167,7 @@
         <main id="main-content" tabindex="-1">
             <section id="feed-status-panel" class="feed-status-panel">
                 <div class="feed-status-main">
-                    <span id="connection-status" class="status-pill loading">
+                    <span id="connection-status" class="status-pill loading" role="status" aria-live="polite">
                         接続確認中
                     </span>
                     <span
@@ -247,6 +189,26 @@
                 </button>
             </section>
 
+            <!-- 「2本目を選んでください」状態を可視化する。以前はトーストを
+                 1 回出すだけで、タブ切り替えやフィルタ変更を跨いで状態が
+                 残っていることが画面から分からなかった。 -->
+            <section
+                id="split-selection-banner"
+                class="split-selection-banner"
+                role="status"
+                aria-live="polite"
+                hidden
+            >
+                <span id="split-selection-text" class="split-selection-text"></span>
+                <button
+                    id="split-selection-cancel-btn"
+                    class="player-secondary-btn"
+                    type="button"
+                >
+                    2画面をやめる
+                </button>
+            </section>
+
             <section
                 id="official-container"
                 class="video-grid"
@@ -255,7 +217,7 @@
                 aria-labelledby="tab-official"
             >
                 <!-- 初期ロード中のスケルトン -->
-                <div class="skeleton-grid">
+                <div class="skeleton-grid" aria-hidden="true">
                     <article class="video-card-skeleton">
                         <div class="skeleton-thumbnail"></div>
                         <div class="skeleton-info">
@@ -295,7 +257,7 @@
                 aria-labelledby="tab-clips"
             >
                 <!-- 初期ロード中のスケルトン -->
-                <div class="skeleton-grid">
+                <div class="skeleton-grid" aria-hidden="true">
                     <article class="video-card-skeleton">
                         <div class="skeleton-thumbnail"></div>
                         <div class="skeleton-info">
@@ -333,15 +295,8 @@
                 role="region"
                 aria-label="動画プレイヤー"
             >
-                <button
-                    id="back-btn"
-                    class="back-button"
-                    type="button"
-                    aria-label="一覧に戻る"
-                >
-                    <span class="icon" aria-hidden="true">←</span>
-                    <span>一覧に戻る</span>
-                </button>
+                <!-- 戻るボタンは操作バー内 (player.js が生成) へ移動した。
+                     専用の行を持たせると映像に使える高さがその分減るため -->
                 <h2 id="player-video-title" class="player-title"></h2>
 
                 <div id="player-container" class="player-container">
@@ -369,13 +324,24 @@
             </section>
         </main>
 
-        <!-- トースト通知コンテナ -->
-        <div
-            class="toast-container"
-            id="toast-container"
-            role="status"
-            aria-live="polite"
-        ></div>
+        <!-- トースト通知。緊急度ごとに別のライブリージョンにする。
+             1 つの領域の aria-live を読み上げ直前に書き換える実装は、
+             複数のスクリーンリーダーで反映が不確実だった。
+             位置は外側のスタックが持つので見た目は 1 列のまま。 -->
+        <div class="toast-stack">
+            <div
+                class="toast-container"
+                id="toast-container-assertive"
+                role="alert"
+                aria-live="assertive"
+            ></div>
+            <div
+                class="toast-container"
+                id="toast-container-polite"
+                role="status"
+                aria-live="polite"
+            ></div>
+        </div>
 
         <div
             id="settings-modal"
@@ -386,19 +352,19 @@
         >
             <div class="settings-panel">
                 <div class="settings-header">
-                    <h2 id="settings-title">&#35373;&#23450;</h2>
+                    <h2 id="settings-title">設定</h2>
                     <button
                         id="settings-close-btn"
                         class="icon-control-btn"
                         type="button"
-                        aria-label="&#35373;&#23450;&#12434;&#38281;&#12376;&#12427;"
+                        aria-label="設定を閉じる"
                     >
                         &times;
                     </button>
                 </div>
                 <form id="settings-form" class="settings-form">
                     <label class="settings-field" for="backend-url-input">
-                        <span>&#12496;&#12483;&#12463;&#12456;&#12531;&#12489;&#12469;&#12540;&#12496;&#12540;</span>
+                        <span>バックエンドサーバー</span>
                         <input
                             id="backend-url-input"
                             type="text"
@@ -407,9 +373,15 @@
                             placeholder="192.168.1.33"
                         />
                     </label>
-                    <label class="settings-check">
-                        <input id="start-local-backend-check" type="checkbox" />
-                        <span>&#12371;&#12398;PC&#12391;&#12496;&#12483;&#12463;&#12456;&#12531;&#12489;&#12434;&#36215;&#21205;&#12377;&#12427;</span>
+                    <label class="settings-field" for="api-key-input">
+                        <span>APIキー（通常は空のままでよい）</span>
+                        <input
+                            id="api-key-input"
+                            type="password"
+                            autocomplete="off"
+                            spellcheck="false"
+                            placeholder="未設定"
+                        />
                     </label>
                     <p id="settings-current-backend" class="settings-current"></p>
                     <div class="settings-actions">
@@ -418,14 +390,14 @@
                             class="player-secondary-btn"
                             type="button"
                         >
-                            &#12461;&#12515;&#12531;&#12475;&#12523;
+                            キャンセル
                         </button>
                         <button
                             id="settings-save-btn"
                             class="player-fallback-open-btn"
                             type="submit"
                         >
-                            &#20445;&#23384;&#12375;&#12390;&#25509;&#32154;
+                            保存して接続
                         </button>
                     </div>
                 </form>
@@ -433,6 +405,8 @@
         </div>
 
         <!-- JavaScript modules -->
+        <!-- 配信の HLS 再生に使う。CSP により外部 CDN は読めないので同梱している -->
+        <script src="vendor/hls.light.min.js"></script>
         <script type="module" src="renderer.js"></script>
     </body>
 </html>

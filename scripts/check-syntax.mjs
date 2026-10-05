@@ -78,7 +78,12 @@ if (hasError) {
 
 function validateChannelParity() {
   const frontendSource = fs.readFileSync("src/frontend/constants.js", "utf8");
-  const backendSource = fs.readFileSync("src/backend/main.py", "utf8");
+  // 唯一のバックエンド実装。以前は src/backend/main.py を見ていたため、
+  // 本番が使う backend/ 側のチャンネル一覧とは黙って乖離できた。
+  const backendSource = fs.readFileSync(
+    "backend/application/channels.py",
+    "utf8",
+  );
   const frontendUrls = extractUrls(frontendSource);
   const backendUrls = extractTargetChannelUrls(backendSource).filter(
     (url) => !officialBackendChannels.has(url),
@@ -114,7 +119,9 @@ function extractUrls(source) {
 function extractTargetChannelUrls(source) {
   const listMatch = source.match(/TARGET_CHANNELS\s*=\s*\[(?<body>[\s\S]*?)\]/);
   if (!listMatch?.groups?.body) {
-    throw new Error("TARGET_CHANNELS not found in src/backend/main.py");
+    throw new Error(
+      "TARGET_CHANNELS not found in backend/application/channels.py",
+    );
   }
   return [...extractUrls(listMatch.groups.body)];
 }

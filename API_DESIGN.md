@@ -35,12 +35,26 @@ Protected routes:
 
 - `GET /api/v1/feed`
 - `GET /api/v1/videos/{video_id}/comments`
-- `WS /api/v1/ws/live-chat/{video_id}` via `?api_key=<VSPO_API_KEY>`
+- `GET /api/v1/videos/{video_id}/stream`
+- `WS /api/v1/ws/live-chat/{video_id}` — see below
 
 Public routes:
 
 - `GET /`
 - `GET /api/v1/health`
+
+**WebSocket auth.** Browsers cannot set custom headers on a WS handshake, and
+a query-string key would land in any reverse proxy's or tunnel's access logs
+that record full request URLs. Instead, the server accepts the handshake and
+then waits up to 5 seconds for a single text frame:
+
+```json
+{ "type": "auth", "api_key": "<VSPO_API_KEY>" }
+```
+
+An invalid key, malformed message, or timeout closes the socket with code
+`1008` before any chat data is sent. No key ever appears in the connection
+URL or in `VSPO_API_KEY`-bearing proxy/tunnel access logs.
 
 ## REST Endpoints
 
@@ -98,6 +112,38 @@ Response:
 }
 ```
 
+### `GET /api/v1/videos/{video_id}/stream`
+
+Resolves a playable source for the video: an HLS manifest URL for live
+streams, or separate video/audio (or progressive) URLs for VODs. Backed by a
+short-lived cache (`VSPO_STREAM_CACHE_TTL`, default 60s) since resolved URLs
+expire.
+
+Validation:
+
+- `video_id`: YouTube video ID, `^[A-Za-z0-9_-]{11}$`
+
+Response:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "video_id": "abcdefghijk",
+    "is_live": true,
+    "protocol": "hls",
+    "url": "https://...",
+    "audio_url": null,
+    "progressive_url": null,
+    "height": null,
+    "title": "..."
+  }
+}
+```
+
+Errors: `409` if the stream has not started yet (`X-Stream-State: upcoming`),
+`404` if no playable source is found, `502` if resolution fails upstream.
+
 ### `WS /api/v1/ws/live-chat/{video_id}`
 
 Streams live chat messages as JSON.
@@ -140,6 +186,31 @@ Standard codes:
 - `VALIDATION_ERROR`
 - `UPSTREAM_ERROR`
 - `INTERNAL_ERROR`
+
+## Configuration
+
+All settings are environment variables read at startup.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VSPO_API_KEY` | *(empty)* | Enables authentication. Required for any non-loopback bind. |
+| `VSPO_ALLOWED_ORIGINS` | `null,http://127.0.0.1:8010,http://localhost:8010` | Comma-separated CORS allowlist. |
+| `VSPO_TRUST_PROXY_HEADER` | `0` | Set to `1` only when the origin is reachable exclusively through a trusted proxy/tunnel. Makes rate limiting use `CF-Connecting-IP` / `X-Real-IP` / `X-Forwarded-For`. |
+| `VSPO_COMMENTS_CONCURRENCY` | `4` | Max simultaneous comment scrapes. |
+| `VSPO_COMMENTS_CACHE_TTL` | `300` | Comment cache lifetime in seconds; `0` disables. |
+| `VSPO_STREAM_CONCURRENCY` | `4` | Max simultaneous stream-URL resolutions. |
+| `VSPO_STREAM_CACHE_TTL` | `60` | Resolved stream URL cache lifetime in seconds; `0` disables. |
+| `VSPO_MAX_LIVE_CHAT` | `16` | Max concurrent live-chat WebSockets. |
+| `VSPO_RATE_LIMIT_REQUESTS` | `30` | Comment/stream requests allowed per window, per client. |
+| `VSPO_RATE_LIMIT_WINDOW` | `60` | Rate limit window in seconds. |
+| `VSPO_SERVE_FRONTEND` | *(unset)* | Set to `1` to serve `/app` even when a key is configured. |
+| `VSPO_ALLOW_INSECURE_BIND` | *(unset)* | Set to `1` to permit a public bind with no key. Not recommended. |
+
+Binding defaults to `127.0.0.1`. A non-loopback bind without `VSPO_API_KEY`
+exits with an error unless `VSPO_ALLOW_INSECURE_BIND=1`.
+
+`/app` is not mounted when `VSPO_API_KEY` is set, because static files cannot
+carry the auth dependency.
 
 ## Operational Notes
 

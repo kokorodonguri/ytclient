@@ -1,0 +1,9 @@
+# 開発・CI 用のツール。実行時依存は backend/requirements.txt を参照。
+# 本番と同じ理由でピン留めする（CI が勝手に壊れないため）。
+pytest==9.1.1
+ruff==0.16.6
+mypy==2.3.1
+
+# starlette.testclient が使う HTTP クライアント。
+# backend/requirements.txt には入らない（本番では不要）。
+httpx==0.28.1

@@ -1,29 +1,48 @@
 const { app, BrowserWindow, shell, session, ipcMain } = require("electron");
-const { spawn } = require("child_process");
 const fs = require("fs");
 const http = require("http");
-const https = require("https");
 const path = require("path");
+const zlib = require("zlib");
+
+// gzip の効果が薄いバイナリ形式には掛けない (二重圧縮で逆にサイズが増える)
+const COMPRESSIBLE_EXTENSIONS = new Set([".html", ".js", ".mjs", ".css", ".json", ".svg"]);
 
 const DEFAULT_BACKEND_PORT = 8010;
-const DEFAULT_BACKEND_URL = `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`;
-const BACKEND_READY_TIMEOUT_MS = 15000;
-const BACKEND_READY_POLL_MS = 300;
+const DEFAULT_BACKEND_URL = "https://youtube.dongurihub.com";
 const APP_ID = "com.vspo.client";
 const APP_ICON_PATH = path.join(__dirname, "assets", "icon.ico");
 
+const FRONTEND_MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".md": "text/plain; charset=utf-8",
+};
+
 const CHROME_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+// file:// の画面から YouTube を開くときに送る Referer
+const EMBED_REFERER = "https://www.youtube.com/";
 
-const ALLOWED_APP_ORIGINS = new Set();
 
 let mainWindow = null;
-let backendProcess = null;
-let isQuitting = false;
 let sessionHooksInstalled = false;
 let ipcHandlersInstalled = false;
+let frontendServer = null;
+let frontendServerOrigin = null;
+let frontendServerStarting = null;
 let runtimeBackendUrl = DEFAULT_BACKEND_URL;
-let startLocalBackend = false;
+let runtimeApiKey = "";
 
 if (process.platform === "win32") {
   app.setAppUserModelId(APP_ID);
@@ -39,11 +58,19 @@ function isSafeExternalUrl(rawUrl) {
   }
 }
 
-function isLocalAppUrl(rawUrl) {
+function isFrontendUrl(rawUrl) {
   if (typeof rawUrl !== "string" || rawUrl.trim() === "") return false;
   try {
     const parsed = new URL(rawUrl);
-    return ALLOWED_APP_ORIGINS.has(parsed.origin);
+
+    // ループバック配信時は、同一オリジンかつルートまたは index.html を許可
+    if (frontendServerOrigin && parsed.origin === frontendServerOrigin) {
+      return parsed.pathname === "/" || parsed.pathname === "/index.html";
+    }
+
+    if (parsed.protocol !== "file:") return false;
+    const expected = new URL(getFrontendUrl());
+    return decodeURIComponent(parsed.pathname) === decodeURIComponent(expected.pathname);
   } catch {
     return false;
   }
@@ -58,7 +85,9 @@ function normalizeBackendUrl(rawUrl) {
   try {
     const parsed = new URL(candidate);
     if (!["http:", "https:"].includes(parsed.protocol)) return null;
-    if (!parsed.port) {
+    // スキーム既定ポートで到達する公開エンドポイント (https://example.com) に
+    // 8010 を付けると接続できなくなるため、既定ポートの補完は http のみに限る。
+    if (!parsed.port && parsed.protocol === "http:") {
       parsed.port = String(DEFAULT_BACKEND_PORT);
     }
     parsed.pathname = parsed.pathname.replace(/\/+$/, "");
@@ -67,25 +96,6 @@ function normalizeBackendUrl(rawUrl) {
     return parsed.toString().replace(/\/$/, "");
   } catch {
     return null;
-  }
-}
-
-function isLoopbackBackendUrl(rawUrl) {
-  try {
-    const { hostname } = new URL(rawUrl);
-    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
-  } catch {
-    return false;
-  }
-}
-
-function getBackendPort(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.port) return Number(parsed.port);
-    return parsed.protocol === "https:" ? 443 : 80;
-  } catch {
-    return DEFAULT_BACKEND_PORT;
   }
 }
 
@@ -121,74 +131,175 @@ function loadRuntimeBackendConfig() {
     process.env.VSPO_BACKEND_URL || fileConfig.backendUrl,
   );
   runtimeBackendUrl = configuredUrl || DEFAULT_BACKEND_URL;
+  runtimeApiKey = String(process.env.VSPO_API_KEY || fileConfig.apiKey || "").trim();
 
-  if (typeof fileConfig.startLocalBackend === "boolean") {
-    startLocalBackend =
-      fileConfig.startLocalBackend && isLoopbackBackendUrl(runtimeBackendUrl);
-  } else {
-    startLocalBackend = isLoopbackBackendUrl(runtimeBackendUrl);
+  if (!configuredUrl) {
+    console.log(`No backend config found, using ${DEFAULT_BACKEND_URL}.`);
   }
-
-  loadRuntimeAllowedOrigins();
-}
-
-function loadRuntimeAllowedOrigins() {
-  ALLOWED_APP_ORIGINS.clear();
-  ALLOWED_APP_ORIGINS.add(new URL(runtimeBackendUrl).origin);
-  ALLOWED_APP_ORIGINS.add("http://127.0.0.1:8000");
-  ALLOWED_APP_ORIGINS.add("http://localhost:8000");
 }
 
 function writeBackendConfig(config) {
   const configPath = path.join(app.getPath("userData"), "backend-config.json");
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  // API キーを含むため所有者のみ読み書き可とする
+  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   return configPath;
 }
 
-async function applyBackendConfig(rawBackendUrl, shouldStartLocalBackend) {
+async function applyBackendConfig(rawBackendUrl, rawApiKey) {
   const backendUrl = normalizeBackendUrl(rawBackendUrl);
   if (!backendUrl) {
     return { ok: false, error: "Invalid backend URL" };
   }
 
   runtimeBackendUrl = backendUrl;
-  startLocalBackend =
-    typeof shouldStartLocalBackend === "boolean"
-      ? shouldStartLocalBackend && isLoopbackBackendUrl(backendUrl)
-      : isLoopbackBackendUrl(backendUrl);
-  loadRuntimeAllowedOrigins();
+  runtimeApiKey = typeof rawApiKey === "string" ? rawApiKey.trim() : runtimeApiKey;
 
   const configPath = writeBackendConfig({
     backendUrl: runtimeBackendUrl,
-    startLocalBackend,
+    apiKey: runtimeApiKey,
   });
 
-  if (!startLocalBackend) {
-    stopBackendProcess();
-  } else {
-    startBackendProcess();
-    await waitForBackendReady(5000);
-  }
-
+  // 画面は apiBaseUrl をクエリで受け取るため、URL を変えたら読み直す
   if (mainWindow && !mainWindow.isDestroyed()) {
     await mainWindow.loadURL(getFrontendUrl());
   }
 
   return {
     ok: true,
-    config: {
-      backendUrl: runtimeBackendUrl,
-      startLocalBackend,
-      configPath,
-    },
+    config: { backendUrl: runtimeBackendUrl, configPath },
   };
 }
 
+function getFrontendDir() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "frontend")
+    : path.join(__dirname, "src", "frontend");
+}
+
+// file:// から読み込むと YouTube 埋め込みが「この動画は再生できません
+// (152/153)」で止まる。オリジンも Referer も無い要求を YouTube が
+// 不正な埋め込みとして弾くため。ループバックの HTTP で配ると
+// http://127.0.0.1:<port> という実体のあるオリジンになり、通常の
+// ブラウザと同じ扱いになる (実測で再生できることを確認済み)。
+function startFrontendServer() {
+  if (frontendServerOrigin) return Promise.resolve(frontendServerOrigin);
+  if (frontendServerStarting) return frontendServerStarting;
+
+  const root = getFrontendDir();
+
+  frontendServerStarting = new Promise((resolve) => {
+    const server = http.createServer((request, response) => {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        response.writeHead(405).end();
+        return;
+      }
+
+      let pathname;
+      try {
+        pathname = decodeURIComponent(
+          new URL(request.url, "http://127.0.0.1").pathname,
+        );
+      } catch {
+        response.writeHead(400).end();
+        return;
+      }
+
+      if (pathname === "/") pathname = "/index.html";
+
+      // 配信対象はフロントエンドのディレクトリ配下だけに閉じる
+      const target = path.join(root, pathname);
+      const relative = path.relative(root, target);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        response.writeHead(403).end();
+        return;
+      }
+
+      fs.stat(target, (statError, stats) => {
+        if (statError) {
+          response.writeHead(404).end();
+          return;
+        }
+
+        // mtime は 1 秒未満を切り捨てるため toUTCString() で秒単位に揃える
+        // (If-Modified-Since はそもそも秒精度なので、これで一致判定できる)
+        const lastModified = new Date(stats.mtimeMs).toUTCString();
+        const headers = {
+          "Content-Type": FRONTEND_MIME_TYPES[path.extname(target).toLowerCase()]
+            || "application/octet-stream",
+          // ループバックのみで自分自身に配るだけの静的ファイルなので、
+          // 短時間キャッシュしても実害はない。must-revalidate で
+          // 期限切れ後は必ず If-Modified-Since を送らせる
+          "Cache-Control": "private, max-age=60, must-revalidate",
+          "Last-Modified": lastModified,
+        };
+
+        if (request.headers["if-modified-since"] === lastModified) {
+          response.writeHead(304, headers).end();
+          return;
+        }
+
+        fs.readFile(target, (error, body) => {
+          if (error) {
+            response.writeHead(404).end();
+            return;
+          }
+
+          const acceptEncoding = request.headers["accept-encoding"] || "";
+          const canGzip =
+            COMPRESSIBLE_EXTENSIONS.has(path.extname(target).toLowerCase()) &&
+            /\bgzip\b/.test(acceptEncoding);
+
+          if (!canGzip) {
+            response.writeHead(200, headers);
+            response.end(request.method === "HEAD" ? undefined : body);
+            return;
+          }
+
+          zlib.gzip(body, (gzipError, compressed) => {
+            if (gzipError) {
+              response.writeHead(200, headers);
+              response.end(request.method === "HEAD" ? undefined : body);
+              return;
+            }
+            response.writeHead(200, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
+            response.end(request.method === "HEAD" ? undefined : compressed);
+          });
+        });
+      });
+    });
+
+    server.on("error", (error) => {
+      console.warn("Frontend server failed to start:", error);
+      frontendServerStarting = null;
+      resolve(null);
+    });
+
+    // ループバックのみ。ポートは OS に選ばせる
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      frontendServer = server;
+      frontendServerOrigin = `http://127.0.0.1:${port}`;
+      resolve(frontendServerOrigin);
+    });
+  });
+
+  return frontendServerStarting;
+}
+
 function getFrontendUrl() {
-  const frontendPath = app.isPackaged
-    ? path.join(process.resourcesPath, "frontend", "index.html")
-    : path.join(__dirname, "src", "frontend", "index.html");
+  if (frontendServerOrigin) {
+    const url = new URL(`${frontendServerOrigin}/index.html`);
+    url.searchParams.set("apiBaseUrl", runtimeBackendUrl);
+    return url.toString();
+  }
+
+  // 配信サーバが起動できなかったときの保険。埋め込みは動かないが、
+  // 一覧と外部ブラウザでの再生は使える。
+  const frontendPath = path.join(getFrontendDir(), "index.html");
   const frontendUrl = new URL(`file:///${frontendPath.replace(/\\/g, "/")}`);
   frontendUrl.searchParams.set("apiBaseUrl", runtimeBackendUrl);
   return frontendUrl.toString();
@@ -196,122 +307,6 @@ function getFrontendUrl() {
 
 function getPreloadPath() {
   return path.join(__dirname, "src", "frontend", "preload.js");
-}
-
-function getBackendLaunchConfig() {
-  if (!startLocalBackend) return null;
-
-  const backendPort = getBackendPort(runtimeBackendUrl);
-
-  if (app.isPackaged) {
-    const executablePath = path.join(process.resourcesPath, "backend.exe");
-    if (fs.existsSync(executablePath)) {
-      return {
-        command: executablePath,
-        args: [String(backendPort), "127.0.0.1"],
-        cwd: process.resourcesPath,
-      };
-    }
-    console.warn(`Packaged backend not found: ${executablePath}`);
-    return null;
-  }
-
-  return {
-    command: process.env.PYTHON || "python",
-    args: [
-      path.join(__dirname, "src", "backend", "main.py"),
-      String(backendPort),
-      "127.0.0.1",
-    ],
-    cwd: __dirname,
-  };
-}
-
-function startBackendProcess() {
-  if (backendProcess) return;
-
-  const launchConfig = getBackendLaunchConfig();
-  if (!launchConfig) return;
-
-  const { command, args, cwd } = launchConfig;
-  backendProcess = spawn(command, args, {
-    cwd,
-    stdio: "ignore",
-    windowsHide: true,
-  });
-
-  backendProcess.once("error", (error) => {
-    console.error("Failed to start backend:", error);
-    backendProcess = null;
-  });
-
-  backendProcess.once("exit", (code, signal) => {
-    if (!isQuitting && code !== 0 && signal !== "SIGTERM") {
-      console.warn(`Backend exited unexpectedly: code=${code} signal=${signal}`);
-    }
-    backendProcess = null;
-  });
-}
-
-function stopBackendProcess() {
-  if (!backendProcess || backendProcess.killed) return;
-  backendProcess.kill();
-  backendProcess = null;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function checkBackendReady() {
-  return new Promise((resolve) => {
-    const client = runtimeBackendUrl.startsWith("https:") ? https : http;
-    const request = client.get(runtimeBackendUrl, (response) => {
-      let body = "";
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => {
-        body += chunk;
-        if (body.length > 4096) {
-          request.destroy();
-          resolve(false);
-        }
-      });
-      response.on("end", () => {
-        if (response.statusCode !== 200) {
-          resolve(false);
-          return;
-        }
-        try {
-          const payload = JSON.parse(body);
-          resolve(
-            payload?.status === "success" &&
-              typeof payload?.message === "string" &&
-              payload.message.includes("VSPO Client API"),
-          );
-        } catch {
-          resolve(false);
-        }
-      });
-    });
-
-    request.setTimeout(1000, () => {
-      request.destroy();
-      resolve(false);
-    });
-
-    request.on("error", () => resolve(false));
-  });
-}
-
-async function waitForBackendReady(timeoutMs = BACKEND_READY_TIMEOUT_MS) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await checkBackendReady()) return true;
-    await delay(BACKEND_READY_POLL_MS);
-  }
-  return false;
 }
 
 function openExternalSafely(url) {
@@ -335,19 +330,45 @@ function installSessionHooksOnce() {
 
   const ses = session.defaultSession;
 
-  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
-    if (permission === "media" || permission === "fullscreen") {
-      callback(true);
+  // このアプリはカメラ/マイクを必要としない。全画面のみ、既知オリジンに限って許可する。
+  const FULLSCREEN_ALLOWED_HOSTS = /(^|\.)youtube(-nocookie)?\.com$/i;
+
+  ses.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission !== "fullscreen") {
+      callback(false);
       return;
     }
-    callback(false);
+    try {
+      const { hostname } = new URL(webContents.getURL());
+      callback(FULLSCREEN_ALLOWED_HOSTS.test(hostname));
+    } catch {
+      callback(false);
+    }
   });
+
+  ses.setPermissionCheckHandler((_webContents, permission) => permission === "fullscreen");
 
   ses.webRequest.onBeforeSendHeaders(
     { urls: youtubeUrls },
     (details, callback) => {
       const requestHeaders = { ...details.requestHeaders };
       requestHeaders["User-Agent"] = CHROME_UA;
+
+      // Referer が全く無い (file:// 読み込み) 要求は YouTube に不正な埋め込みと
+      // みなされ「この動画は再生できません (152/153)」で止まるため、その場合だけ
+      // 埋め込み元を youtube.com として補う。
+      //
+      // ループバック配信 (http://127.0.0.1:<port>) の Referer は書き換えない。
+      // 実在するオリジンなので YouTube は通常の埋め込みとして受け付ける
+      // (実測: 素のループバック Referer では再生でき、youtube.com へ
+      // 書き換えると Referer とオリジンの不一致で逆に 152 で弾かれる)。
+      const referer = requestHeaders.Referer || requestHeaders.referer;
+      const hasUsableReferer = Boolean(referer) && !/^file:/i.test(referer);
+      if (!hasUsableReferer) {
+        delete requestHeaders.referer;
+        requestHeaders.Referer = EMBED_REFERER;
+      }
+
       callback({ cancel: false, requestHeaders });
     },
   );
@@ -389,21 +410,31 @@ function installSessionHooksOnce() {
     },
   );
 
+  // 配信の HLS は hls.js が XHR で取りに行く。画面は file:// なので Origin は
+  // null になり、googlevideo は CORS ヘッダを返さないため既定では弾かれる。
+  // 該当ホストの応答にだけ許可ヘッダを差し込む (既存値は上書きして重複を避ける)。
   ses.webRequest.onHeadersReceived(
     {
       urls: [
-        "http://127.0.0.1:8000/*",
-        "http://localhost:8000/*",
-        "http://127.0.0.1:8010/*",
-        "http://localhost:8010/*",
-        `${runtimeBackendUrl}/*`,
+        "*://*.googlevideo.com/*",
+        "*://manifest.googlevideo.com/*",
       ],
     },
     (details, callback) => {
       const responseHeaders = { ...details.responseHeaders };
-      responseHeaders["Cache-Control"] = ["no-store, no-cache, must-revalidate"];
-      responseHeaders.Pragma = ["no-cache"];
-      responseHeaders.Expires = ["0"];
+      for (const key of Object.keys(responseHeaders)) {
+        const lowerKey = key.toLowerCase();
+        if (
+          lowerKey === "access-control-allow-origin" ||
+          lowerKey === "access-control-allow-headers" ||
+          lowerKey === "access-control-expose-headers"
+        ) {
+          delete responseHeaders[key];
+        }
+      }
+      responseHeaders["Access-Control-Allow-Origin"] = ["*"];
+      responseHeaders["Access-Control-Allow-Headers"] = ["*"];
+      responseHeaders["Access-Control-Expose-Headers"] = ["*"];
       callback({ responseHeaders });
     },
   );
@@ -423,13 +454,11 @@ function installIpcHandlersOnce() {
     }
   });
 
-  ipcMain.handle("app:get-version", () => app.getVersion());
-  ipcMain.handle("app:get-platform", () => process.platform);
   ipcMain.handle("app:get-backend-config", () => ({
     ok: true,
     config: {
       backendUrl: runtimeBackendUrl,
-      startLocalBackend,
+      apiKey: runtimeApiKey,
       defaultBackendUrl: DEFAULT_BACKEND_URL,
     },
   }));
@@ -437,7 +466,7 @@ function installIpcHandlersOnce() {
     if (!config || typeof config !== "object") {
       return { ok: false, error: "Invalid config" };
     }
-    return applyBackendConfig(config.backendUrl, config.startLocalBackend);
+    return applyBackendConfig(config.backendUrl, config.apiKey);
   });
 
   ipcMain.on("app:log", (_event, logEntry) => {
@@ -486,25 +515,38 @@ function createMainWindow() {
     }
   });
 
+  // preload を持つウィンドウをリモートオリジンで開かせない。外部リンクは常に既定ブラウザへ。
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isLocalAppUrl(url)) return { action: "allow" };
     openExternalSafely(url);
     return { action: "deny" };
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isLocalAppUrl(url)) return;
+    if (isFrontendUrl(url)) return;
     event.preventDefault();
     openExternalSafely(url);
+  });
+
+  mainWindow.webContents.on("will-attach-webview", (event) => {
+    event.preventDefault();
   });
 
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 
-  mainWindow.loadURL(getFrontendUrl()).catch(() => {
+  // ここが失敗するのは「画面そのものを読めなかった」場合だけで、
+  // バックエンドに繋がらない場合ではない (それは画面側が扱う)。
+  // 以前の文言は Backend Required で、発火条件と食い違っていた。
+  mainWindow.loadURL(getFrontendUrl()).catch((error) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    const fallbackHtml = `<html><body style="background:#0f1720;color:#ffffff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div><h1>Backend Required</h1><p>Cannot connect to backend: ${runtimeBackendUrl}</p></div></body></html>`;
+    console.error("Failed to load the app UI:", error);
+    const fallbackHtml =
+      `<html lang="ja"><body style="background:#0f1720;color:#ffffff;` +
+      `display:flex;align-items:center;justify-content:center;height:100vh;` +
+      `margin:0;font-family:system-ui,sans-serif;text-align:center;">` +
+      `<div><h1>画面を読み込めませんでした</h1>` +
+      `<p>アプリを再起動してください。</p></div></body></html>`;
     mainWindow.loadURL(
       `data:text/html;charset=UTF-8,${encodeURIComponent(fallbackHtml)}`,
     );
@@ -512,29 +554,52 @@ function createMainWindow() {
   return mainWindow;
 }
 
-app.whenReady().then(async () => {
-  loadRuntimeBackendConfig();
-  installSessionHooksOnce();
-  installIpcHandlersOnce();
-  await session.defaultSession.clearCache();
-  startBackendProcess();
-  await waitForBackendReady();
-  createMainWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  // 2 つ目のウィンドウを開かず、既存のウィンドウを前に出す
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
   });
-});
+
+  app.whenReady().then(async () => {
+    loadRuntimeBackendConfig();
+    installSessionHooksOnce();
+    installIpcHandlersOnce();
+    // 画面の配信サーバはウィンドウを作る前に上げる (URL が決まらないため)
+    await startFrontendServer();
+    createMainWindow();
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    });
+  });
+}
 
 app.on("before-quit", () => {
-  isQuitting = true;
-  stopBackendProcess();
+  if (frontendServer) {
+    try {
+      frontendServer.close();
+    } catch (error) {
+      console.warn("Failed to close frontend server", error);
+    }
+    frontendServer = null;
+  }
 });
 
 app.on("web-contents-created", (_event, contents) => {
   contents.setWindowOpenHandler(({ url }) => {
-    if (isLocalAppUrl(url)) return { action: "allow" };
     openExternalSafely(url);
     return { action: "deny" };
+  });
+  contents.on("will-navigate", (event, url) => {
+    if (isFrontendUrl(url)) return;
+    event.preventDefault();
+    openExternalSafely(url);
   });
 });
 app.on("window-all-closed", () => {

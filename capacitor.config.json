@@ -1,7 +1,7 @@
 {
   "appId": "com.vspo.client",
   "appName": "VSPO Client",
-  "webDir": "frontend",
+  "webDir": "src/frontend",
   "server": {
     "androidScheme": "http"
   },

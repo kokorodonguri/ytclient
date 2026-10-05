@@ -8,7 +8,9 @@
 /* ========================================
    🌐 API設定
    ======================================== */
-const DEFAULT_API_BASE_URL = 'http://192.168.1.33:8010';
+// 開発機固有のLANアドレスを既定に埋め込まない。
+// 同一オリジン配信を第一候補とし、それが取れない場合のみ公開エンドポイントへ向ける。
+const DEFAULT_API_BASE_URL = 'https://youtube.dongurihub.com';
 
 function normalizeApiBaseUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
@@ -33,6 +35,7 @@ function getRuntimeApiBaseUrl() {
   }
 
   const origin = globalThis.location?.origin;
+  // Capacitor の WebView は localhost オリジンで動くが API は同居しないため除外する
   const isLocalWebViewOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin || '');
   if (isLocalWebViewOrigin) {
     return DEFAULT_API_BASE_URL;
@@ -44,16 +47,39 @@ function getRuntimeApiBaseUrl() {
   return DEFAULT_API_BASE_URL;
 }
 
+export const API_KEY_STORAGE_KEY = 'vspo.apiKey';
+export const API_BASE_URL_STORAGE_KEY = 'vspo.apiBaseUrl';
+// 最後に成功したフィード。サーバーが落ちていても起動直後に一覧を出すため
+// (feedCache.js)。サーバー側の VSPO_FEED_CACHE_PATH と同じ役割。
+export const FEED_CACHE_STORAGE_KEY = 'vspo.feedCache';
+
 export const API_CONFIG = {
   BASE_URL: getRuntimeApiBaseUrl(),
+  // 公開バックエンドは認証必須。値は起動時に設定元から注入する（URLには載せない）
+  API_KEY: '',
   TIMEOUT: 15000, // 15 seconds
   ENDPOINTS: {
     HEALTH: '/api/v1/health',
     FEED: '/api/v1/feed',
     COMMENTS: (videoId) => `/api/v1/videos/${encodeURIComponent(videoId)}/comments`,
+    STREAM: (videoId) => `/api/v1/videos/${encodeURIComponent(videoId)}/stream`,
     LIVE_CHAT: (videoId) => `/api/v1/ws/live-chat/${encodeURIComponent(videoId)}`,
   },
 };
+
+/**
+ * 実行時にバックエンド接続情報を差し替える
+ * @param {{ baseUrl?: string, apiKey?: string }} config
+ */
+export function setRuntimeApiConfig({ baseUrl, apiKey } = {}) {
+  const normalized = normalizeApiBaseUrl(baseUrl);
+  if (normalized) {
+    API_CONFIG.BASE_URL = normalized;
+  }
+  if (typeof apiKey === 'string') {
+    API_CONFIG.API_KEY = apiKey.trim();
+  }
+}
 
 /* ========================================
    📺 チャンネル設定
@@ -188,24 +214,12 @@ export const BUTTON_LABELS = {
   BACK: '一覧に戻る',
   MORE: 'もっと見る',
   LESS: '一部を表示',
-  DANMAKU_ON: '💬 弾幕ON',
-  DANMAKU_OFF: '💬 弾幕OFF',
+  DANMAKU_ON: '弾幕 ON',
+  DANMAKU_OFF: '弾幕 OFF',
   RELOAD_PLAYER: '再読込',
   OPEN_BROWSER: 'ブラウザで開く',
   CLOSE: '閉じる',
   CANCEL: 'キャンセル',
   SAVE: '保存',
   DELETE: '削除',
-};
-
-export default {
-  API_CONFIG,
-  CHANNELS,
-  GAME_FILTERS,
-  VIDEO_MODES,
-  MODES,
-  UI_CONSTANTS,
-  TIMING,
-  MESSAGES,
-  BUTTON_LABELS,
 };

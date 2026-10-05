@@ -16,14 +16,23 @@ import {
   closeAllDropdowns,
   updateGameSelectedText,
   updateSidebarSelectedChannel,
-  hidePlayer,
   showToast,
 } from "./dom.js";
 import { renderGrid } from "./grid.js";
-import { log, logError, escapeHTML, debounce } from "./utils.js";
+import { cancelSplitSelection, closePlayer } from "./player.js";
+import {
+  log,
+  logError,
+  escapeHTML,
+  debounce,
+  saveToLocalStorage,
+} from "./utils.js";
 import {
   CHANNELS,
   API_CONFIG,
+  API_BASE_URL_STORAGE_KEY,
+  API_KEY_STORAGE_KEY,
+  setRuntimeApiConfig,
   GAME_FILTERS,
   VIDEO_MODES,
   TIMING,
@@ -38,7 +47,7 @@ const MODULE = "UI";
  * サイドバー初期化
  * ======================================== */
 
-export function initializeSidebar() {
+function initializeSidebar() {
   log(MODULE, "Initializing sidebar...");
 
   const hamburgerBtn = getDOM("hamburgerBtn");
@@ -76,8 +85,12 @@ export function initializeSidebar() {
       item.className = "menu-item";
       item.setAttribute("type", "button");
       item.dataset.channelName = channel.name;
-      item.innerHTML = `<span class="icon" aria-hidden="true">📌</span><span>${escapeHTML(channel.name)}</span>`;
+      item.innerHTML = `<span>${escapeHTML(channel.name)}</span>`;
       item.addEventListener("click", () => {
+        if (state.currentSelectedChannel === channel.name) {
+          closeSidebar();
+          return;
+        }
         setSelectedChannel(channel.name);
         closeSidebar();
         renderCurrentGrid();
@@ -94,13 +107,28 @@ export function initializeSidebar() {
  * ゲームドロップダウン初期化
  * ======================================== */
 
-export function initializeGameDropdown() {
+function initializeGameDropdown() {
   log(MODULE, "Initializing game dropdown...");
 
   const gameSelectedText = getDOM("gameSelectedText");
   const gameOptions = getDOM("gameOptions");
 
   if (!gameSelectedText || !gameOptions) return;
+
+  // 選択肢の正本は GAME_FILTERS。index.html にも同じ 7 件を書いていたため、
+  // 片方だけ編集すると黙って乖離した（チャンネル一覧には
+  // scripts/check-syntax.mjs の parity 検査があるが、これには無い）。
+  gameOptions.innerHTML = "";
+  GAME_FILTERS.forEach((filter, index) => {
+    const option = document.createElement("li");
+    option.className = "dropdown-item";
+    option.id = `game-opt-${index}`;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === 0));
+    option.dataset.value = filter.value;
+    option.textContent = filter.label;
+    gameOptions.appendChild(option);
+  });
 
   const items = Array.from(gameOptions.querySelectorAll(".dropdown-item"));
   let activeIndex = 0;
@@ -133,11 +161,13 @@ export function initializeGameDropdown() {
 
   const commit = (item) => {
     const gameValue = item.getAttribute("data-value") || "";
+    const isUnchanged = state.currentSelectedGame === gameValue;
     items.forEach((el) => el.setAttribute("aria-selected", String(el === item)));
-    state.setSelectedGame(gameValue);
-    updateGameSelectedText(item.textContent);
     closeList();
     gameSelectedText.focus();
+    if (isUnchanged) return;
+    state.setSelectedGame(gameValue);
+    updateGameSelectedText(item.textContent);
     renderCurrentGrid();
   };
 
@@ -206,7 +236,7 @@ export function initializeGameDropdown() {
  * タブボタン初期化
  * ======================================== */
 
-export function initializeTabButtons() {
+function initializeTabButtons() {
   log(MODULE, "Initializing tab buttons...");
 
   const tabOfficial = getDOM("tabOfficial");
@@ -246,11 +276,57 @@ export function initializeTabButtons() {
 }
 
 /**
+ * Escape キーの単一の入口
+ *
+ * 以前は document に 2 つ、モーダル要素に 1 つの keydown があり、
+ * どれが先に効くかを defaultPrevented と hidden の場当たり判定で
+ * 調整していた。ここで「手前にあるものから 1 つだけ閉じる」に統一する。
+ */
+function handleGlobalEscape(event) {
+  if (event.key !== "Escape" && event.key !== "Esc") return;
+  // モーダル内のトラップが処理済み
+  if (event.defaultPrevented) return;
+
+  try {
+    // 1. 設定モーダル（フォーカスが外に逃げていた場合の保険）
+    const modal = getDOM("settingsModal");
+    if (modal && !modal.classList.contains("hidden")) {
+      event.preventDefault();
+      closeSettingsModal();
+      return;
+    }
+
+    // 2. 開いているドロップダウン
+    if (getDOM("gameOptions")?.classList.contains("show")) {
+      event.preventDefault();
+      closeAllDropdowns();
+      return;
+    }
+
+    // 3. サイドバー
+    if (isSidebarOpen()) {
+      event.preventDefault();
+      closeSidebar();
+      return;
+    }
+
+    // 4. プレイヤー
+    const playerView = getDOM("playerView");
+    if (playerView && !playerView.classList.contains("hidden")) {
+      event.preventDefault();
+      closePlayer();
+    }
+  } catch (error) {
+    logError(MODULE, "Error handling Escape", error);
+  }
+}
+
+/**
  * ========================================
  * グローバルハンドラー初期化
  * ======================================== */
 
-export function initializeGlobalHandlers() {
+function initializeGlobalHandlers() {
   log(MODULE, "Initializing global handlers...");
 
   const refreshBtn = getDOM("refreshBtn");
@@ -265,12 +341,8 @@ export function initializeGlobalHandlers() {
     }
   });
 
-  // Escapeでサイドバーを閉じる（オーバーレイクリックのキーボード代替）
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isSidebarOpen()) {
-      closeSidebar();
-    }
-  });
+  // Escape の処理はここ 1 箇所だけ（handleGlobalEscape を参照）
+  document.addEventListener("keydown", handleGlobalEscape);
 
   // 更新ボタン
   if (refreshBtn) {
@@ -327,10 +399,16 @@ export function initializeGlobalHandlers() {
     });
   }
 
+  // 2画面の選択を取り消す。以前は一度入ると抜ける手段が無く、次に何か
+  // 再生するまで「2本目を待っている」状態が続いていた。
+  getDOM("splitSelectionCancelBtn")?.addEventListener("click", () => {
+    cancelSplitSelection();
+  });
+
   log(MODULE, "Global handlers initialized");
 }
 
-export function initializeSettingsDialog() {
+function initializeSettingsDialog() {
   const modal = getDOM("settingsModal");
   const form = getDOM("settingsForm");
   const closeBtn = getDOM("settingsCloseBtn");
@@ -368,7 +446,7 @@ function trapModalKeydown(e) {
     modal.querySelectorAll(
       'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
     ),
-  ).filter((el) => el.offsetParent !== null);
+  ).filter((el) => el.getClientRects().length > 0);
   if (focusables.length === 0) return;
 
   const first = focusables[0];
@@ -394,26 +472,26 @@ function setBackgroundInert(inert) {
 async function openSettingsModal() {
   const modal = getDOM("settingsModal");
   const input = getDOM("backendUrlInput");
-  const check = getDOM("startLocalBackendCheck");
+  const keyInput = getDOM("apiKeyInput");
   const current = getDOM("settingsCurrentBackend");
 
-  if (!modal || !input || !check) return;
+  if (!modal || !input) return;
 
   let backendUrl = API_CONFIG.BASE_URL;
-  let startLocalBackend = false;
+  let apiKey = API_CONFIG.API_KEY;
 
   try {
     const result = await window.api?.getBackendConfig?.();
     if (result?.ok && result.config) {
       backendUrl = result.config.backendUrl || backendUrl;
-      startLocalBackend = Boolean(result.config.startLocalBackend);
+      apiKey = result.config.apiKey || apiKey;
     }
   } catch (error) {
     logError(MODULE, "Failed to load backend config", error);
   }
 
   input.value = backendUrl;
-  check.checked = startLocalBackend;
+  if (keyInput) keyInput.value = apiKey;
   if (current) {
     current.textContent = `現在の接続先: ${backendUrl}`;
   }
@@ -446,10 +524,10 @@ function normalizeBackendInput(rawValue) {
 
 async function saveSettings() {
   const input = getDOM("backendUrlInput");
-  const check = getDOM("startLocalBackendCheck");
+  const keyInput = getDOM("apiKeyInput");
   const saveBtn = getDOM("settingsSaveBtn");
 
-  if (!input || !check) return;
+  if (!input) return;
 
   const backendUrl = normalizeBackendInput(input.value);
   if (!backendUrl) {
@@ -457,22 +535,25 @@ async function saveSettings() {
     return;
   }
 
-  if (!window.api?.setBackendConfig) {
-    showToast("この環境では設定を保存できません", "error");
-    return;
-  }
+  const apiKey = (keyInput?.value || "").trim();
 
   if (saveBtn) saveBtn.disabled = true;
   try {
-    const result = await window.api.setBackendConfig({
-      backendUrl,
-      startLocalBackend: check.checked,
-    });
-    if (!result?.ok) {
-      throw new Error(result?.error || "保存に失敗しました");
+    if (window.api?.setBackendConfig) {
+      const result = await window.api.setBackendConfig({ backendUrl, apiKey });
+      if (!result?.ok) {
+        throw new Error(result?.error || "保存に失敗しました");
+      }
+    } else {
+      // Electron 以外（APK / ブラウザ）は端末側に保持する
+      saveToLocalStorage(API_KEY_STORAGE_KEY, apiKey);
+      saveToLocalStorage(API_BASE_URL_STORAGE_KEY, backendUrl);
     }
+
+    setRuntimeApiConfig({ baseUrl: backendUrl, apiKey });
     showToast("設定を保存しました", "success");
     closeSettingsModal();
+    await window.triggerFeedRefresh?.();
   } catch (error) {
     logError(MODULE, "Failed to save backend config", error);
     showToast("設定の保存に失敗しました", "error");
@@ -486,13 +567,17 @@ async function saveSettings() {
  * バックボタン初期化
  * ======================================== */
 
-export function initializeBackButton() {
+function initializeBackButton() {
   log(MODULE, "Initializing back button...");
 
-  const backBtn = getDOM("backBtn");
-  if (backBtn) {
-    backBtn.addEventListener("click", () => {
-      closePlayer();
+  // 戻るボタンは操作列の中に毎回描き直されるため、常設の #player-container に
+  // 一度だけ委譲する。単一プレイヤーと2画面のどちらの描画でも同じ経路で拾える
+  const playerContainer = getDOM("playerContainer");
+  if (playerContainer) {
+    playerContainer.addEventListener("click", (event) => {
+      if (event.target.closest?.("#back-btn")) {
+        closePlayer();
+      }
     });
   }
 
@@ -509,6 +594,7 @@ export function initializeBackButton() {
  * @param {string} value - チャンネル値
  */
 export function setSelectedChannel(value) {
+  if (state.currentSelectedChannel === value) return;
   state.setSelectedChannel(value);
   const label = value === CHANNELS.ALL.value ? CHANNELS.ALL.label : value;
   updateSidebarSelectedChannel(label);
@@ -559,7 +645,14 @@ function getGridContainerWrapper(mode) {
     : getDOM("clipsContainer");
 }
 
-function renderCurrentGrid() {
+/**
+ * 現在の状態でグリッドを描き直す
+ *
+ * 以前は renderer.js の renderGridWithState がほぼ同じことをしていた。
+ * renderGrid 自体がコンテナ不在と描画失敗を扱う（グリッド内にメッセージを
+ * 出す）ので、呼び出し側で包み直す層は要らない。
+ */
+export function renderCurrentGrid() {
   renderGrid(state, { getGridContainer: getGridContainerWrapper, getDOM });
 }
 
@@ -588,56 +681,6 @@ function syncSidebarActiveChannel(value) {
  * ======================================== */
 
 /**
- * プレイヤーを閉じる
- */
-export function closePlayer() {
-  log(MODULE, "Closing player...");
-
-  // WebSocketをクローズ
-  if (state.activeChatSocket) {
-    try {
-      state.activeChatSocket.close();
-    } catch (e) {
-      logError(MODULE, "Error closing WebSocket", e);
-    }
-    state.activeChatSocket = null;
-  }
-
-  // UIを更新
-  const lastVideoId = state.currentPlayerVideos?.[0]?.videoId || "";
-  hidePlayer(state.currentMode);
-  state.setCurrentPlayerVideos([]);
-
-  // 再生前に選択していたカードへフォーカスを戻す
-  restoreFocusToCard(lastVideoId);
-}
-
-/**
- * 一覧に戻ったとき、元のビデオカードへフォーカスを戻す
- * @param {string} videoId
- */
-export function restoreFocusToCard(videoId) {
-  // 有効なフォーカスが別の場所にあるとき（例: タブ切替時）は奪わない
-  const active = document.activeElement;
-  const playerView = getDOM("playerView");
-  if (
-    active &&
-    active !== document.body &&
-    !(playerView && playerView.contains(active))
-  ) {
-    return;
-  }
-
-  let target = null;
-  if (videoId && typeof CSS !== "undefined" && CSS.escape) {
-    target = document.querySelector(
-      `.video-card[data-video-id="${CSS.escape(videoId)}"]`,
-    );
-  }
-  (target || getDOM("mainContent"))?.focus();
-}
-
-/**
  * ========================================
  * UI全体初期化
  * ======================================== */
@@ -661,6 +704,10 @@ export function initializeUI() {
 
     // 初期状態を設定
     setSelectedChannel(CHANNELS.ALL.value);
+    // setMode は現在値と同じだと早期 return するため、初期表示では
+    // roving tabindex が未設定のまま両タブが Tab 順に入ってしまう。
+    // タブの ARIA 状態だけは明示的に同期させる。
+    setTabActive(state.currentMode);
     setMode(VIDEO_MODES.OFFICIAL);
 
     log(MODULE, "UI initialized successfully");
@@ -677,33 +724,4 @@ export function initializeUI() {
  * ユーティリティ関数
  * ======================================== */
 
-/**
- * チャンネル情報を取得
- * @returns {Array} チャンネル配列
- */
-export function getTargetChannels() {
-  return CHANNELS.MEMBERS;
-}
 
-/**
- * ゲームフィルターオプションを取得
- * @returns {Array} ゲームオプション配列
- */
-export function getGameFilterOptions() {
-  return GAME_FILTERS;
-}
-
-export default {
-  initializeUI,
-  initializeSidebar,
-  initializeGameDropdown,
-  initializeTabButtons,
-  initializeGlobalHandlers,
-  initializeSettingsDialog,
-  initializeBackButton,
-  setSelectedChannel,
-  setMode,
-  closePlayer,
-  getTargetChannels,
-  getGameFilterOptions,
-};

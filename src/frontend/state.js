@@ -1,6 +1,10 @@
 /**
  * Global Application State Management
  * Centralizes all application state to replace scattered global variables
+ *
+ * 素の代入と等価なだけのセッターは置かない（呼び出し側が結局直接代入して
+ * いて、片方だけ通る状態になっていた）。ここに残すのは、後始末を伴うもの
+ * だけにする。
  */
 
 const state = {
@@ -67,36 +71,6 @@ const state = {
   },
 
   /**
-   * Set the active WebSocket for live chat
-   * @param {WebSocket} socket - WebSocket connection
-   */
-  setActiveChatSocket(socket) {
-    this.activeChatSocket = socket;
-  },
-
-  /**
-   * Set the polling timer
-   * @param {number} timer - Timer ID from setTimeout
-   */
-  setPollingTimer(timer) {
-    this.pollingTimer = timer;
-  },
-
-  /**
-   * Close and reset the active chat socket
-   */
-  closeActiveChatSocket() {
-    if (this.activeChatSocket) {
-      try {
-        this.activeChatSocket.close();
-      } catch (e) {
-        console.error('Error closing chat socket:', e);
-      }
-      this.activeChatSocket = null;
-    }
-  },
-
-  /**
    * Clear the polling timer
    */
   clearPollingTimer() {
@@ -116,39 +90,6 @@ const state = {
 
   clearSplitSelection() {
     this.pendingSplitPrimary = null;
-  },
-
-  /**
-   * Reset all state to initial values
-   */
-  reset() {
-    this.currentMode = 'official';
-    this.currentSelectedChannel = 'ALL';
-    this.currentSelectedGame = '';
-    this.appData = {
-      official: [],
-      clips: [],
-      is_building: true,
-      last_updated: null,
-      last_error: null,
-    };
-    this.closeActiveChatSocket();
-    this.clearPollingTimer();
-    this.currentPlayerVideos = [];
-    this.pendingSplitPrimary = null;
-  },
-
-  /**
-   * Get current filter status
-   * @returns {Object} { mode, channel, game, appData }
-   */
-  getFilterStatus() {
-    return {
-      mode: this.currentMode,
-      channel: this.currentSelectedChannel,
-      game: this.currentSelectedGame,
-      appData: this.appData,
-    };
   },
 };
 
